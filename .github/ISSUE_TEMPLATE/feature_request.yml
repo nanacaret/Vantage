@@ -1,0 +1,44 @@
+name: Feature request
+description: Suggest a new capability or data source
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What are you trying to inspect that Vantage cannot show today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Which window or tab, what data, and where it should appear.
+    validations:
+      required: true
+
+  - type: textarea
+    id: source
+    attributes:
+      label: Data source
+      description: >
+        If you know the API (libproc / sysctl / IOKit / CGWindowList / Security /
+        private interface), name it. Note whether it works under SIP and without root.
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - Small (one tab / one column)
+        - Medium (new window or new collection module)
+        - Large (new subsystem)
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

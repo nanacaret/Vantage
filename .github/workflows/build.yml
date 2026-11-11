@@ -1,0 +1,188 @@
+# SPDX-License-Identifier: MIT
+# push 时自动编译、打包 DMG 并发布。
+#
+#   - 任意 push / PR：编译 + 生成 DMG + 上传为 Actions artifact（保留 14 天）
+#   - push 到 main：额外更新名为 nightly 的滚动预发布（asset 固定名，--clobber 替换）
+#   - push tag v*：创建该 tag 的正式 Release，附上带版本号的 DMG
+#   - workflow_dispatch：等同手动触发一次 main 构建
+#
+# runner / SDK：macos-26 + Xcode 26.5，与本地开发机（macOS 26.4 / 26.5 SDK）一致。
+# 不用 macos-15：它默认 Xcode 16.4 / macOS 15 SDK，比本地老两代，CI 验证的产物
+# 与实机跑的不是一回事。注意部署目标仍是 Package.swift 里的 macOS 12，
+# 用 26 SDK 编译不等于产物要求 macOS 26。
+#
+# CI 产物是 ad-hoc 签名、未公证的 DMG（没有 Developer ID 证书）。
+# Gatekeeper 首次拦截时右键 App → 打开即可，见 README / SECURITY.md。
+name: Build & DMG
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# 同一 ref 的连续 push 只保留最新一次，避免两个任务同时改写 nightly release。
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build DMG (macOS)
+    runs-on: macos-26
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      arch: ${{ steps.meta.outputs.arch }}
+      dmg: ${{ steps.meta.outputs.dmg }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # 固定到与本地相同的 26.5 SDK。用 DEVELOPER_DIR 环境变量而非改系统全局
+      # Xcode 选择：不动 runner 状态，只影响本 job 后续步骤的 SwiftPM / xcrun / clang。
+      # 镜像轮换若不再提供 26.5，退回默认（26.6）并告警，不让构建直接失败。
+      - name: Pin Xcode 26.5 SDK
+        run: |
+          XCODE="/Applications/Xcode_26.5.app/Contents/Developer"
+          if [ -d "$XCODE" ]; then
+            echo "DEVELOPER_DIR=$XCODE" >> "$GITHUB_ENV"
+            echo "✓ DEVELOPER_DIR=$XCODE"
+          else
+            echo "::warning::Xcode 26.5 不在该镜像上，使用默认 Xcode；SDK 可能与本地不一致"
+          fi
+
+      - name: Toolchain
+        run: |
+          sw_vers
+          echo "DEVELOPER_DIR=${DEVELOPER_DIR:-(image default)}"
+          xcodebuild -version
+          swift --version
+          xcrun --sdk macosx --show-sdk-version
+          xcrun --sdk macosx --show-sdk-path
+          uname -m
+
+      # 生成器输出已入库，保证 swift build 不依赖 Python；这里验证没有漂移。
+      - name: Verify generated sources are reproducible
+        run: |
+          python3 Tools/build_l10n.py
+          git diff --exit-code -- \
+            Resources \
+            Sources/Vantage/L10nTable.swift \
+            Sources/Vantage/L10nKeys.swift \
+            Sources/CProc/cproc_l10n_data.c \
+            Sources/CProc/cproc_l10n_data.h
+
+      - name: Build .app
+        run: ./Scripts/build_app.sh
+
+      - name: Create DMG
+        id: meta
+        run: |
+          set -euo pipefail
+          ARCH="$(uname -m)"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            RAW="${GITHUB_REF_NAME#v}"
+            # tag 名可能含 / 等字符，统一换成安全字符再进文件名
+            VERSION="$(printf '%s' "$RAW" | LC_ALL=C tr -c 'A-Za-z0-9._-' '-')"
+            DMG="Vantage-${VERSION}-${ARCH}.dmg"
+          else
+            VERSION="nightly"
+            DMG="Vantage-nightly-${ARCH}.dmg"
+          fi
+          mkdir -p dist
+          ./Scripts/make_dmg.sh "dist/${DMG}"
+          test -f "dist/${DMG}" && test -f "dist/${DMG}.sha256"
+          {
+            echo "version=${VERSION}"
+            echo "arch=${ARCH}"
+            echo "dmg=dist/${DMG}"
+          } >> "$GITHUB_OUTPUT"
+          echo "✓ dist/${DMG} (${ARCH})"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Vantage-${{ steps.meta.outputs.version }}-${{ steps.meta.outputs.arch }}
+          path: |
+            dist/*.dmg
+            dist/*.dmg.sha256
+          retention-days: 14
+          if-no-files-found: error
+
+  release:
+    name: Publish DMG
+    needs: build
+    # PR 与 fork 只读 token 不发布；main / v* tag / 手动触发才写 Release。
+    if: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) || github.event_name == 'workflow_dispatch' }}
+    # 只做 gh API 调用与资产上传，不需要 macOS 工具链，用 Linux runner 更省 CI 时长。
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      DMG: ${{ needs.build.outputs.dmg }}
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      # gh 在已有本地仓库的目录里运行更稳（tag push 时能正确解析已存在的 tag）。
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: Vantage-${{ needs.build.outputs.version }}-${{ needs.build.outputs.arch }}
+          path: dist
+
+      - name: Publish Release
+        run: |
+          set -euo pipefail
+          SUM="${DMG}.sha256"
+          test -f "$DMG" && test -f "$SUM"
+          command -v gh >/dev/null 2>&1 || { echo "gh CLI 不可用" >&2; exit 1; }
+
+          NOTES="$(mktemp)"
+          trap 'rm -f "$NOTES"' EXIT
+          cat > "$NOTES" <<'EOF'
+          Automated DMG built by GitHub Actions from this repository's source.
+
+          Signing: ad-hoc (codesign -s -). NOT signed with a Developer ID and NOT
+          notarized. Gatekeeper may block the first launch: right-click Vantage.app
+          and choose Open, or allow it in System Settings -> Privacy & Security.
+
+          Verify the download before opening:
+              shasum -a 256 -c Vantage-*.dmg.sha256
+
+          Build from source instead: see README.md. Power / DVFS readings require
+          Apple Silicon; Intel Macs and VMs show "-" for those fields.
+          EOF
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            printf '\nRelease tag: %s\n' "$GITHUB_REF_NAME" >> "$NOTES"
+          else
+            printf '\nRolling build: rebuilt on every push to the default branch.\n' >> "$NOTES"
+          fi
+
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            TAG="$GITHUB_REF_NAME"
+            TITLE="Vantage $VERSION"
+            if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              gh release upload "$TAG" "$DMG" "$SUM" --clobber \
+                --repo "$GITHUB_REPOSITORY"
+            else
+              # tag 已由 push 创建，gh 会复用它，无需指定目标提交。
+              gh release create "$TAG" "$DMG" "$SUM" \
+                --title "$TITLE" --notes-file "$NOTES" \
+                --repo "$GITHUB_REPOSITORY"
+            fi
+          else
+            TAG="nightly"
+            if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              gh release upload "$TAG" "$DMG" "$SUM" --clobber \
+                --repo "$GITHUB_REPOSITORY"
+              # 让 nightly 这个 tag 跟随最新 commit（失败不影响资产已上传）。
+              gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/nightly" \
+                -f "sha=$GITHUB_SHA" -F force=true >/dev/null || true
+            else
+              gh release create "$TAG" "$DMG" "$SUM" --prerelease \
+                --title "Nightly build" --notes-file "$NOTES" \
+                --target "$GITHUB_SHA" --repo "$GITHUB_REPOSITORY"
+            fi
+          fi
+          echo "✓ https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG"

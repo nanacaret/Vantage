@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- SPDX-License-Identifier: MIT -->
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>zh_CN</string>
+    <key>CFBundleDisplayName</key>
+    <string>Vantage</string>
+    <key>CFBundleExecutable</key>
+    <string>Vantage</string>
+    <key>CFBundleIconFile</key>
+    <string>Vantage</string>
+    <key>CFBundleIdentifier</key>
+    <string>io.github.nanacaret.Vantage</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>Vantage</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>12.0</string>
+    <key>NSAccessibilityUsageDescription</key>
+    <string>Vantage uses Accessibility to bring a specific window to the front (for example when you double-click a row in the Window tab or the Window List). / Vantage 使用辅助功能读取进程的窗口列表，以便把指定窗口前置激活。</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2026 nanacaret. Licensed under MIT.</string>
+    <key>LSUIElement</key>
+    <false/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>NSSupportsAutomaticTermination</key>
+    <false/>
+</dict>
+</plist>

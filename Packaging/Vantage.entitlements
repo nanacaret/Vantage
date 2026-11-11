@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- SPDX-License-Identifier: MIT -->
+<plist version="1.0">
+<dict>
+    <!-- 仅对「未签名 / 第三方且带 get-task-allow」的进程有效，能让这些进程
+         显示精确的 TASK_DYLD_INFO 镜像列表。SIP 开启时它对受保护进程无效，
+         且 root 也救不了 task_for_pid —— 本工程的主要采集路径已不依赖 task port。 -->
+    <key>com.apple.security.cs.debugger</key>
+    <true/>
+</dict>
+</plist>

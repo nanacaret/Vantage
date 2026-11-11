@@ -1,0 +1,93 @@
+name: Bug report
+description: Report a crash, build failure, wrong reading or UI problem
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please fill in the environment block — most macOS
+        process-inspection issues are SDK- or permission-specific.
+
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "e.g. macOS 26.5 (25Bxxxx)"
+    validations:
+      required: true
+
+  - type: input
+    id: xcode
+    attributes:
+      label: Xcode / SDK version
+      placeholder: "e.g. Xcode 26, MacOSX26.5.sdk"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: arch
+    attributes:
+      label: Architecture
+      options:
+        - Apple Silicon
+        - Intel
+        - VM / other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Build / compile
+        - Crash on launch or interaction
+        - Process list / sorting / search
+        - Inspector tabs (FD, socket, pipe, TTY, window, signing, Mach)
+        - Performance monitor values
+        - Device tree / extensions
+        - Preferences / i18n / colors
+        - Window lookup / activation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: What you did, what you expected, what actually happened.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / crash report / screenshot
+      description: >
+        Paste the full compiler output, or the .crash report from
+        ~/Library/Logs/DiagnosticReports/. For crashes a stack trace is far more
+        useful than a screenshot.
+      render: shell
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Performance channel diagnostics (only for wrong readings)
+      description: >
+        If power / frequency / temperature values look wrong, paste the scrollable
+        "per-channel diagnostics" text from the bottom of the performance window.
+        It lists the exact Energy Model channels, pmgr tables and sensors used.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I built the latest source with `swift build -c release` (zero warnings)
+          required: false
+        - label: I ran Vantage without root / sudo
+          required: false
+        - label: I checked the known limitations in docs/COMPATIBILITY.md
+          required: false
