@@ -31,6 +31,7 @@ enum ProcBridge {
                     status: p.status,
                     flags: p.flags,
                     translated: p.translated,
+                    execArchs: p.exec_archs,
                     pgid: p.pgid,
                     startSec: p.start_sec,
                     startUSec: p.start_usec,
@@ -56,6 +57,7 @@ enum ProcBridge {
                     name: String(cString: cproc_name(q)),
                     cmdline: String(cString: cproc_cmdline(q)),
                     exepath: String(cString: cproc_exepath(q)),
+                    argv0: String(cString: cproc_argv0(q)),
                     ttyName: String(cString: cproc_tty_name(q))
                 )
             }
@@ -144,4 +146,8 @@ enum ProcBridge {
     static func signal(_ pid: Int32, _ sig: Int32) -> Int32 {
         cproc_signal(pid, sig)
     }
+
+    /// 手动「立即刷新」时清掉 Mach-O 架构缓存：App 升级 / 二进制被替换后
+    /// 不用等 60 秒 TTL 就能看到新的架构组合。
+    static func flushExecArchCache() { cproc_exec_archs_flush() }
 }

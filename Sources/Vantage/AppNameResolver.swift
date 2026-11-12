@@ -44,6 +44,9 @@ enum AppNameResolver {
     /// NSString 缓存，空串表示「该 bundle 没有可用的本地化名」，避免反复读盘。
     /// NSCache 是线程安全的；主表刷新可能在主线程，也可能在采集队列。
     private static let cache = NSCache<NSString, NSString>()
+    /// CFBundleExecutable 单独一张缓存：它是「bundle 声明的可执行文件名」，
+    /// 与 proc_pidpath 给出的实际 exepath 是两个独立事实，不能混用同一份缓存。
+    private static let exeCache = NSCache<NSString, NSString>()
 
     /// 返回 bundle 的本地化显示名；没有则返回 nil，调用方回退到 .app 目录名。
     static func localizedName(forBundlePath path: String) -> String? {
@@ -74,7 +77,31 @@ enum AppNameResolver {
         return nil
     }
 
+    /// Info.plist 的 CFBundleExecutable（bundle 声明的主可执行文件名）。
+    /// bundle 目录名、这个字段、实际 exepath 的 basename、argv[0] 是四个
+    /// 可以互不相同的值；例如 Visual Studio Code.app 的目录名是
+    /// "Visual Studio Code"，CFBundleExecutable/实际 exe 是 "Electron"，
+    /// 而通过 symlink 调用时 argv[0] 可能是 "Code"。
+    static func bundleExecutable(forBundlePath path: String) -> String? {
+        let key = path as NSString
+        if let hit = exeCache.object(forKey: key) {
+            return hit.length == 0 ? nil : (hit as String)
+        }
+        var found: String?
+        if let bundle = Bundle(path: path),
+           let d = bundle.infoDictionary,
+           let s = d["CFBundleExecutable"] as? String,
+           !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            found = s.count > 120 ? String(s.prefix(120)) : s
+        }
+        exeCache.setObject((found ?? "") as NSString, forKey: key)
+        return found?.isEmpty == true ? nil : found
+    }
+
     /// 偏好切换时清空，避免旧值残留（bundle 内容一般不会变，但改 Info.plist
     /// 或替换 .app 后能立刻生效）。
-    static func invalidate() { cache.removeAllObjects() }
+    static func invalidate() {
+        cache.removeAllObjects()
+        exeCache.removeAllObjects()
+    }
 }

@@ -41,7 +41,7 @@ you can build locally — or download as a DMG from Releases**:
 
 | Area | What you get |
 |---|---|
-| Process list | Tree / flat view, 14 sortable columns with a three-state header cycle, live refresh (0.5–5 s), filters, regex search, localized names plus raw executable names, highlighted exited processes |
+| Process list | Tree / flat view, 14 sortable columns with a three-state header cycle, live refresh (0.5–5 s), filters, regex search, localized names plus raw executable names, optional argv[0] annotation when it differs from the binary, highlighted exited processes |
 | Inspector | 13 tabs — Overview, Files, Environment, Images, Network, Monitoring, Pipe peers, VM Regions, TTY, Windows, Signature, Mach, Command — each independently filterable |
 | Signals | Right-click menu and main menu with 31 Darwin signals, configurable visibility (12 shown by default), confirmation policies, pause/resume, `sample` |
 | Performance (⌘P) | CPU/GPU/ANE/DRAM power, whole-machine power (SMC `PSTR`), CPU/GPU temperature, per-cluster frequency from P-state residency, CPU/GPU activity, disk and network throughput, thermal pressure — all with a per-channel diagnostic readout |
@@ -120,6 +120,15 @@ incremental rebuilds in the same directory are 1–3 s.
 Every push to `main` rebuilds a rolling **[Nightly](https://github.com/nanacaret/Vantage/releases/tag/nightly)**
 prerelease; pushing a `v*` tag creates a versioned Release. Both attach the DMG and its
 SHA-256 checksum. Pull requests build the DMG too, as an Actions artifact (retained 14 days).
+
+**Installing**: open the DMG and drag `Vantage.app` onto the `Applications` shortcut —
+the disk image has a background with an arrow and positioned icons to guide the drop.
+If the guided Finder layout did not appear (headless CI builds can fall back to a plain
+window), the DMG still contains `README.txt` with the same instructions and an
+`Install.command` you can double-click to copy the app into `/Applications`.
+The `.background` and `.fseventsd` items are hidden with `chflags hidden`; if your Mac has
+"show all files" enabled globally, Finder may still display them — that is a system setting,
+not a DMG defect.
 
 CI builds are **ad-hoc signed and not notarized** — there is no Developer ID certificate in
 GitHub Actions. Gatekeeper may block the first launch: right-click `Vantage.app` and choose
@@ -203,7 +212,7 @@ twice produces no diff. Generated sources carry an SPDX header and are committed
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute |
 | [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) | Inspirations and references |
 | [.github/workflows/build.yml](.github/workflows/build.yml) | CI: build, DMG, nightly / tag Releases |
-| [Scripts/make_dmg.sh](Scripts/make_dmg.sh) | Local DMG packaging (`hdiutil`, no third-party tools) |
+| [Scripts/make_dmg.sh](Scripts/make_dmg.sh) | Local UDZO DMG packaging (`diskutil image`, falls back to `hdiutil` on older systems; no third-party tools) |
 
 ## Known limitations & disclaimer
 

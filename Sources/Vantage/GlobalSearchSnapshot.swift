@@ -100,10 +100,12 @@ private enum GlobalSearchSources {
         let rows = [
             "\(p.pid)\t\(p.ppid)\t\(p.uid)\t\(p.userName)",
             "\(p.displayLabel)\t\(loc)\t\(p.displayName)",
-            "\(p.rawName)\t\(p.name)\t\(p.comm)",
+            "\(p.rawName)\t\(p.name)\t\(p.comm)\t\(p.bundleExecutableName)",
+            p.argv0,
             p.cmdline,
             p.exepath,
             p.bundlePath ?? "",
+            p.bundleRoleText ?? "",
             "\(p.ttyName)\t\(p.ttyShortName)\t\(p.stateName)\t\(p.archName)",
             "\(p.rss)\t\(p.vss)\t\(p.threads)\t\(p.nfiles)",
         ]

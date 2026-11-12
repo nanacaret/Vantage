@@ -46,6 +46,10 @@ Apple 未公开其稳定性：
 脉冲波形），随本项目 [MIT](LICENSE) 许可一同发布。替换主图后可运行
 `python3 Tools/make_icon.py` 重建全套尺寸。
 
+`Packaging/dmg-background.png` 是安装 DMG 的原创引导背景（同一套深蓝→青绿渐变、
+细网格、箭头与双语提示），由 `Tools/make_dmg_bg.py` 生成后入库，同样随
+[MIT](LICENSE) 许可发布。
+
 README 的界面截图位于 `docs/screenshots/`，共 5 张，均为本项目的实机截图
 （主窗口、性能监控、设备树、全局搜索、窗口列表）。原始 Retina PNG 随
 [MIT](LICENSE) 许可一同发布。

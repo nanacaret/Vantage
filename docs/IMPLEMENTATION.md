@@ -54,7 +54,7 @@ iconutil -c icns Assets/Vantage.iconset -o Vantage.app/Contents/Resources/Vantag
 | %CPU | 用 `PROC_PIDTASKINFO` 的累积 CPU 时间做两次采样差分（Activity Monitor 口径：单核 100%） |
 | 排序 | **14 列全部可排序**，同一表头三态循环：单击排序 → 再单击反序 → 再单击恢复树形；换一列重新从第一态开始。排序时自动切扁平列表，表头显示自绘升降序三角，二级键为 PID |
 | 过滤 | 所有 / 我的 / 系统 / 非僵死 / 仅 GUI 应用；全文搜索名称、PID、用户名、命令行 |
-| 名称显示 | 有 Bundle 的 helper / XPC / Renderer 在应用名后**同时标注可执行文件原始短名**（如 `WeChat (crashpad_handler)`）；可选 Bundle 本地化显示名与 3 种格式，搜索/排序/复制/tooltip/检查器标题同步 |
+| 名称显示 | 区分 `.app` 目录名、`CFBundleExecutable`、实际 exe basename 与 `argv[0]` 四个可能互不相同的值；helper 在应用名后标注原始短名（`WeChat (crashpad_handler)`），调用名不同时也可标注（`bash (sh)`）；两者并列时改用文字标签消歧（`Visual Studio Code (Electron) 以 Code 调用`）；可选本地化显示名与 3 种格式，搜索/排序/复制/tooltip/检查器标题同步 |
 | 提示行 | 详情页里 C 层追加的说明性「提示」行（SIP / task port 等）**默认隐藏**，可在偏好里打开；占位提示不受影响 |
 | 国际化 | 简体中文 / English / 跟随系统，运行时切换、无需重启；语义 key 作唯一标识（中文只是 value），切换后菜单、窗口标题、列头、按钮、偏好文字即时刷新 |
 | 偏好设置 | `⌘,` 打开：**「通用」「样式」「信号」三个页签** —— 采集上限、详情缓存 TTL、刷新/采样间隔、默认视图、排序与行为开关、**进程名称显示**、**界面（提示行 / 语言）**、已退出进程高亮与 11 项可定制配色、以及 31 个信号的显示配置，全部即时生效 |
@@ -139,7 +139,7 @@ SMC 的 `#KEY` 总数与温度键读数（参与 CPU/GPU 平均的会打 `[CPU]`
 | 字面量（默认） | 大小写 / 变音不敏感的子串匹配，就是原来的行为 |
 | 正则（`.*` 开） | `NSRegularExpression`，大小写不敏感 |
 
-- **主表**：按**字段**匹配（`^WeChat$` 能精确命中名称字段，不会先把十几个字段拼成一整行再失配）；覆盖应用名、本地化名、raw 名、BSD 短/长名、命令行、可执行路径、Bundle、PID、用户、TTY、状态、架构。
+- **主表**：按**字段**匹配（`^WeChat$` 能精确命中名称字段，不会先把十几个字段拼成一整行再失配）；覆盖应用名、本地化名、raw 名、argv[0]、`CFBundleExecutable`、BSD 短/长名、命令行、可执行路径、Bundle、PID、用户、TTY、状态、架构。
 - **详情页当前页**：按整行匹配，命中已有的 `allRows`，切换模式**不重采数据**。
 - **全局搜索窗口**：按结果显示行匹配。
 - 三个入口和 `⌘, → 通用 → 搜索` 的开关通过 `.searchModeDidChange` 互相同步；工具栏搜索框旁有 `.*` 按钮，全局搜索窗口也有一个。
@@ -231,12 +231,13 @@ SMC 的 `#KEY` 总数与温度键读数（参与 CPU/GPU 平均的会打 `[CPU]`
 ```
 Vantage/
 ├── Package.swift                       # SwiftPM，target: CProc (C) + Vantage (Swift)
-├── Packaging/                          # .app bundle 元数据（不进源码目录）
+├── Packaging/                          # .app / .dmg 元数据（不进源码目录）
 │   ├── Info.plist                      # CFBundleIdentifier / 图标 / 权限用途说明
-│   └── Vantage.entitlements            # ad-hoc 签名用的 entitlement
+│   ├── Vantage.entitlements            # ad-hoc 签名用的 entitlement
+│   └── dmg-background.png              # DMG 拖拽引导背景图（已入库，CI 无需 Pillow）
 ├── Scripts/                            # 构建与打包脚本
 │   ├── build_app.sh                    # 编译并组装 .app
-│   └── make_dmg.sh                     # 打包 DMG（hdiutil，无第三方工具）
+│   └── make_dmg.sh                     # UDZO：diskutil image 主路径 + hdiutil 回退 + 拖拽引导
 ├── Sources/
 │   ├── CProc/
 │   │   ├── include/CProc.h             # 对外 C 接口（扁平结构 + accessor）
@@ -247,6 +248,7 @@ Vantage/
 │   │   ├── proc_detail.c               # 单进程详情 + 无 task port 采集层（region / pipe / csops / tty）
 │   │   ├── perf.c                      # 性能采样线程：IOReport / SMC / DVFS / 公开层计数器
 │   │   ├── ioreg.c                     # IORegistry 树 / 属性 / driver bundle / client PID（纯 ASCII 输出）
+│   │   ├── proc_arch.c                 # Mach-O FAT / thin 头解析 → 架构切片（带缓存）
 │   │   ├── cproc_l10n_data.c           # 生成：C 层运行时文本的语义 key + 双语表
 │   │   └── cproc_l10n_data.h           # 生成：查表接口（C 层私有头，不放 include/）
 │   └── Vantage/
@@ -283,7 +285,8 @@ Vantage/
 │   ├── build_l10n.py                          # 生成 .strings / L10nTable / L10nKeys（自动串起 C 生成器）
 │   ├── build_c_l10n.py                        # 扫描 C 源码 → cproc_l10n_data.c/h
 │   ├── swift_scan.py                          # Swift 字符串字面量状态机扫描器（迁移用）
-│   └── make_icon.py                           # App Icon 资源重建
+│   ├── make_icon.py                           # App Icon 资源重建
+│   └── make_dmg_bg.py                         # DMG 拖拽引导背景图生成（仅本地需要 Pillow）
 ├── Assets/                                    # Vantage.png / iconset / .icns
 ├── docs/                                      # 实现笔记 / 兼容性 / 发布清单 / 截图
 ├── .github/workflows/build.yml                # CI：编译 + DMG + Release
@@ -650,6 +653,27 @@ C 采集层以 macOS SDK / xnu 公开头文件为准。以下列出这些接口�
 10. **环境变量解析越界**：分配 `needed + 2` 并清零作双 NUL 哨兵，所有循环都带 `p < end`。
 11. **父进程 PID**：统一用 `kp_eproc.e_ppid`，树形构建额外做了环 / 孤儿 / 深度防御。
 12. **`task port` 泄漏**：每次 `task_for_pid` 成功后 `mach_port_deallocate`。
+13. **`pbi_flags` 的公开位**：xnu `bsd/sys/proc_info.h` 只导出到
+    `PROC_FLAG_EXEC (0x4000)`；Rosetta 位在 `#ifdef PRIVATE` 的
+    `proc_info_private.h` 里，公开 SDK 不导出。曾经用 `0x00002000` 兜底
+    `PROC_FLAG_TRANSLATED`，而 `0x2000` 是 `PROC_FLAG_PSUGID`（进程自 exec
+    后提过权）—— `/usr/bin/sudo` 这类 setuid 的通用二进制因此被整批显示成
+    `Intel (Rosetta 2)`。两个 C 文件的 `#ifndef` 兜底一律按 xnu 公开头真实值
+    （`LP64=0x10`、`SLEADER=0x20`、`CTTY=0x40`、`CONTROLT=0x80`、
+    `PSUGID=0x2000`、`EXEC=0x4000`），`flagdefs` 不再列任何私有位。
+14. **架构识别**：`proc_arch.c` 读 Mach-O 文件头判断可执行文件含哪些 slice，
+    而不是从 `pbi_flags` 猜运行时 ISA。FAT 头（`CA FE BA BE` / `CA FE BA BF`）
+    字段一律大端，`fat_arch` 20 字节 / `fat_arch_64` 32 字节；thin Mach-O 由
+    magic 判断后续字段的字节序（`CF FA ED FE` 为小端 64 位）。
+    `cputype` 映射到 `CPROC_ARCH_*` 位掩码，`arm64e` 由 `cpusubtype & ~0xff000000 == 2`
+    识别。按「路径 + dev/ino/mtime/size」缓存，TTL 60 秒内零系统调用，
+    ⌘R /「立即刷新」调 `cproc_exec_archs_flush()` 强制重读。
+    运行时 Rosetta 只在「Apple Silicon 主机 + 二进制不含 arm64 slice」这一确定
+    条件下标注；通用二进制实际选了哪个 slice 属公开接口无法反查的信息，不猜测。
+15. **argv[0] 单独保留**：`KERN_PROCARGS2` 缓冲区的最后一个字符串未必有 NUL
+    结尾，不能当 C 字符串用 `strnlen`；按 `p - arg` 的已知长度复制，并在拼进
+    空格分隔的 `cmdline` 之前先保存 `argv[0]`。Swift 侧因此能拿到完整的调用名，
+    用于「与 bin 不同时」的名称标注、tooltip、概览页与搜索。
 
 ---
 
@@ -940,9 +964,10 @@ Sources/Vantage/
 | | 默认过滤 / 树内排序键 / 方向 | 所有 / %CPU / 降序 | 启动时套用到主窗口 |
 | | 启动时树形视图 | 开 | 关则默认扁平列表 |
 | 进程名称显示 | 同时显示原始进程名 (raw) | **开** | 有 Bundle 且 raw 名与主名不同的进程，名称列追加可执行短名 |
+| | argv[0] 名与 bin 不同时同时显示 | **开** | 名称列追加 argv[0] 的文件名，例如 `bash (sh)` |
 | | 主名称用 Bundle 本地化显示名 | 关 | 读 `CFBundleDisplayName` / `CFBundleName`（如「微信」）；关则用 `.app` 目录名 |
-| | raw 名格式 | 括号 `(raw)` | 另有中点 `· raw`、方括号 `[raw]`；只改追加部分 |
-| | 实时预览 | — | 同一 Bundle 的主进程 / helper 两行示例，改选项立刻变 |
+| | raw 名格式 | 括号 `(raw)` | 另有中点 `· raw`、方括号 `[raw]`；argv[0] 单独出现时沿用，与 raw 并列时改用「以 X 调用」避免两个同款括号 |
+| | 实时预览 | — | 主进程 / helper / argv[0] 不同 / 三者互不相同四个案例，改选项立刻变 |
 | 排序与行为 | 点击表头自动切扁平列表 | 开 | 关则保留树内排序（旧行为） |
 | | 同一列三击恢复树形 | 开 | 关则退化为「升序 / 降序」二态循环 |
 | | 表头显示升降序三角 | 开 | 自绘图片 |
@@ -960,7 +985,13 @@ C 侧实现：`cproc_config.c` 持有 `cproc_limits_t g_cproc_limits`，`proc_de
 
 **问题**：一个 `.app` 里往往有一堆 helper / XPC / Renderer。`ProcessSnapshot.bundlePath` 是从 `exepath` 反向找 `.app/` 得到的，所以它们和主进程共享同一个 Bundle，若不做区分，主表里全都显示成「WeChat」。例如某 App 的 helper 名称显示为 `WeChat`，点开检查器「命令」页才发现可执行文件其实是 `WeChat.app/Contents/Frameworks/crashpad_handler`（崩溃上报 helper）——**不点进去无法判断真实身份**。
 
-**方案**：名称列在显示应用名的同时追加 **raw 名**（可执行文件的 basename），开关在「通用 → 进程名称显示」，默认**开**。
+**方案**：名称列在显示应用名的同时追加 **raw 名**（可执行文件的 basename），开关在「通用 → 进程名称显示」，默认**开**。另有独立开关把 **argv[0] 名**在它与 bin 不同时也追加进来（默认开）。
+
+需要区分的是**四个可以互不相同的值**：`.app` 目录名、`Info.plist` 的
+`CFBundleExecutable`、`proc_pidpath` 给的实际可执行文件 basename、以及
+`KERN_PROCARGS2` 里的 `argv[0]`。典型叠加案例：`Visual Studio Code.app` 的目录名是
+`Visual Studio Code`，声明与实际 exe 都是 `Electron`，而通过 symlink 调用时
+`argv[0]` 可以是 `Code` —— **bundle 与 exe 不同名、exe 与 argv[0] 也不同名**。
 
 ```
 WeChat                                ← 主进程，raw 与主名相同，不重复标注
@@ -968,24 +999,48 @@ WeChat (crashpad_handler)             ← helper，格式「括号」，默认
 WeChat · crashpad_handler             ← 格式「中点」
 WeChat [crashpad_handler]             ← 格式「方括号」
 微信 (crashpad_handler)                ← 再打开「主名称用 Bundle 本地化显示名」
+bash (sh)                              ← argv[0] 与 bin 不同，只有一段追加
+Visual Studio Code (Electron) 以 Code 调用   ← 两段追加并列，第二个改用文字标签
 ```
+
+两段追加并列时**不能共用同一种括号**：`Visual Studio Code (Electron) (Code)`
+分不出哪个括注是真实文件、哪个只是调用名。所以 argv[0] 单独出现时沿用
+`rawNameStyle`，与 raw 段同时出现时改成 `L("model.argv0Alias", …)`
+（中文「以 X 调用」/ 英文「as X」）。偏好设置的实时预览里有四种组合可直接对照。
 
 | 层 | 取值 | 说明 |
 |---|---|---|
 | `displayName` | `.app` 目录名 / BSD 短名 | 原有语义，图标缓存、树内排序仍用它 |
 | `primaryDisplayName` | 可选本地化名 | 开启后读 `Info.plist` 的 `CFBundleDisplayName` → `CFBundleName`，失败回退 `displayName` |
-| `rawName` | `exepath` basename → `name` → `comm` | 优先可执行文件文件名，不受 `p_comm` 16 字符截断影响 |
-| `displayLabel` | 主名 + 可选 raw | 主表名称列、名称列复制、右键菜单标题、信号确认框、检查器窗口标题、概览页统一使用 |
+| `bundleExecutableName` | `Info.plist` 的 `CFBundleExecutable` | bundle **声明**的主可执行文件名，独立 `NSCache` 缓存 |
+| `isBundleMainExecutable` / `bundleRoleText` | `exepath` 是否落在 `<bundle>/Contents/MacOS/<declared>` | 区分主程序与 helper / 子组件；概览页显示 |
+| `executableName` / `rawName` | `exepath` basename → `name` → `comm` | 优先可执行文件文件名，不受 `p_comm` 16 字符截断影响 |
+| `argv0` / `argv0Name` | `KERN_PROCARGS2` 里原始 argv[0] / 其 basename | 由 C 层单独保留，不从已用空格拼接的 `cmdline` 反推 |
+| `identitySummary` | 四个名字分行列出 | 名称列 tooltip，不靠括号猜身份 |
+| `displayLabel` | 主名 + 可选 raw + 可选 argv[0] | 主表名称列、名称列复制、右键菜单标题、信号确认框、检查器窗口标题、概览页统一使用 |
 
-**只在满足全部条件时追加**：有 Bundle（`bundlePath != nil`）、开关开启、`rawName` 非空、raw 与主名 `localizedCaseInsensitiveCompare` 不同。所以 Safari 主进程仍是「Safari」，不会变成「Safari (Safari)」；没有 Bundle 的命令行进程也不受影响。
+**raw 只在满足全部条件时追加**：有 Bundle（`bundlePath != nil`）、开关开启、`rawName` 非空、raw 与主名 `localizedCaseInsensitiveCompare` 不同。所以 Safari 主进程仍是「Safari」，不会变成「Safari (Safari)」；没有 Bundle 的命令行进程也不受影响。
+
+**argv[0] 段**与 Bundle 无关，判断依据是 `argv0Name` 是否等于真实可执行文件的 basename；同时排除与主名、raw 名重复。常见触发场景：`/bin/sh` 是 `/bin/bash` 的硬链接（`proc_pidpath` 给 `/bin/bash`，argv[0] 给 `/bin/sh`）、登录 shell 的 `-bash`、以及 `exec -a` 自定义调用名。因为 `cmdline` 是空格拼接后的字符串（参数含空格时无法还原），argv[0] 由 C 层在解析 `KERN_PROCARGS2` 时按已知长度单独复制进快照，用 accessor 传给 Swift。读不到 `KERN_PROCARGS2` 的进程（受保护 / 已退出）`argv0` 为空，这一段自然不显示。
+
+```
+bash (sh)                                    ← argv[0]=/bin/sh，规范 exe=/bin/bash
+Visual Studio Code (Electron) 以 Code 调用     ← 三者互不相同：两段追加并列，第二改文字标签
+Visual Studio Code (Electron) as Code         ← 英文界面同一行
+```
 
 **配套行为**：
 
-- **搜索**：无论开关是否打开，过滤都覆盖应用名、本地化名、raw 名、BSD 短名与命令行 —— 直接搜 `crashpad_handler` 能找到所有相关进程。
-- **排序**：「进程名称」列按 `primaryDisplayName`（主名称）排，不算 `(raw)` 后缀，同 Bundle 的进程仍聚在一起；切换显示开关不会让顺序跳动。
-- **截断**：列宽有限时名称列的 tooltip 始终给出完整组合名、raw 名与可执行路径。
-- **概览页**新增「原始进程名 (raw)」「Bundle」两行，便于和主表对照。
-- **本地化名解析** `AppNameResolver` 用 `NSCache` 按 bundle 路径缓存（同一个 .app 下几十个 helper 只读一次 plist），只在开关开启时调用；超长 plist 值截断到 80 字符，切换开关或「恢复默认」会清空缓存。
+- **搜索**：无论开关是否打开，过滤都覆盖应用名、本地化名、raw 名、argv[0]、
+  `CFBundleExecutable`、实际 exe basename、BSD 短名与命令行 —— 直接搜
+  `crashpad_handler`、`Electron` 或 `/bin/sh` 都能找到相关进程；全局搜索快照同样覆盖。
+- **排序**：「进程名称」列按 `primaryDisplayName`（主名称）排，不算追加后缀，同 Bundle 的进程仍聚在一起；切换显示开关不会让顺序跳动。
+- **截断**：列宽有限时名称列的 tooltip 始终给出完整组合名、四个身份字段、argv[0] 与可执行路径。
+- **概览页**新增「原始进程名 (raw)」「argv[0]（调用名）」「Bundle」「Bundle 声明的可执行文件」
+  「Bundle 内角色」五行，便于和主表对照。
+- **本地化名解析** `AppNameResolver` 用两张 `NSCache` 按 bundle 路径分别缓存显示名与
+  `CFBundleExecutable`（同一个 .app 下几十个 helper 只读一次 plist）；超长 plist 值截断，
+  切换开关或「恢复默认」会清空两张缓存。
 
 ### 样式页：已退出进程高亮
 

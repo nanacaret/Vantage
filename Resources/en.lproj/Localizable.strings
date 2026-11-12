@@ -46,7 +46,11 @@
 "color.thresholdColorsForTheCpu" = "Threshold colors for the % CPU column.";
 "color.warm" = "Warm";
 "color.zombie" = "Zombie";
+"detail.archSlices" = "Architectures";
 "detail.architecture" = "Architecture";
+"detail.argv0" = "argv[0] (invocation name)";
+"detail.bundleExecutable" = "Bundle Declared Executable";
+"detail.bundleRole" = "Role in Bundle";
 "detail.cmd.bundle" = "# Bundle: {0}\n\n";
 "detail.cmd.executable" = "# Executable: {0}\n";
 "detail.cmd.header" = "# PID {0}\n";
@@ -278,6 +282,7 @@
 "lang.followSystem" = "Follow System";
 "lang.zhHans" = "Simplified Chinese";
 "list.architecture" = "Architecture";
+"list.argv0Tooltip" = "argv[0]: {0}";
 "list.click" = "⌘ / ⌥ + Click";
 "list.configureMenuSignals" = "Configure Menu Signals…";
 "list.copyExecutablePath" = "Copy Executable Path";
@@ -359,8 +364,24 @@
 "menu.window" = "Window";
 "menu.windowList" = "Window List…";
 "menu.windowList2" = "Window List…";
+"model.arch.appleSilicon" = "Apple Silicon";
+"model.arch.intel" = "Intel";
+"model.arch.intel32" = "Intel 32-bit";
+"model.arch.other" = "Other";
+"model.arch.powerPC" = "PowerPC";
+"model.arch.rosetta2" = "Rosetta 2";
+"model.arch.tooltipRosetta" = "The binary has no arm64 slice, so it must run translated under Rosetta 2 on Apple Silicon.";
+"model.arch.tooltipSlices" = "Architectures: {0}";
+"model.arch.tooltipUniversal" = "Universal binary; the slice actually running is chosen by the system and cannot be queried through public APIs.";
+"model.arch.tooltipUnknown" = "Cannot read the executable Mach-O header (script, protected path, or the process has exited).";
+"model.arch.universal" = "Universal";
+"model.argv0Alias" = "as {0}";
 "model.background" = "Background";
+"model.bundleRoleHelper" = "helper / component";
+"model.bundleRoleMain" = "main executable";
+"model.bundleRoleUnknown" = "no CFBundleExecutable declared";
 "model.foreground" = "Foreground";
+"model.identityTooltip" = "Bundle: {0}\nDeclared executable: {1}\nActual executable: {2}\nargv[0]: {3}";
 "model.noForegroundGroup" = "No foreground group";
 "model.noTerminal" = "No terminal";
 "perf.aneDramAvgPeak" = "ANE {0} · DRAM {1} (avg {2} / peak {3})";
@@ -436,6 +457,7 @@
 "pref.appliedImmediatelyNoRestartNeeded" = "Applied immediately, no restart needed";
 "pref.appliedTakesEffectImmediately" = "Applied · takes effect immediately";
 "pref.appliedToTheMainWindow" = "Applied to the main window at launch; can also be changed anytime from the toolbar / menus.";
+"pref.argv0Hint" = "Only appended when the argv[0] filename differs from the real executable basename, e.g. bash (sh) when /bin/sh is provided by /bin/bash. Alone it uses the raw-name format; when an exe name is already appended it switches to 'as X' so two identical brackets are not ambiguous. Full values are in the tooltip / Overview tab.";
 "pref.changesRunState" = "(changes run state)";
 "pref.checkedSignalsAppearInThe" = "Checked signals appear in the process context menu and the main menu's Send Signal submenu. Changes apply immediately; reopen the menu to see them. ⚠ signals terminate or crash the process by default.";
 "pref.choosingAppliesAWholePalette" = "Choosing applies a whole palette; editing any color switches to Custom.";
@@ -479,7 +501,7 @@
 "pref.globalSearchHeavyPagesHint" = "Images / Pipe peers / Memory mappings: full enumeration per process, much slower with many processes";
 "pref.globalSearchMaxRows" = "Global search row cap";
 "pref.globalSearchMaxRowsHint" = "Maximum sampled rows per session; extra rows are truncated and flagged";
-"pref.helpersXpcServicesAndRenderers" = "Helpers, XPC services and renderers inside one .app share the same Bundle, so they all show the same app name. Enabling this appends the raw executable name in the Name column so you can tell them apart without opening the inspector.";
+"pref.helpersXpcServicesAndRenderers" = "Helpers, XPC services and renderers inside one .app share the same Bundle and would all show the same app name. The Name column can optionally append the raw executable name and an argv[0] invocation name that differs from the binary. Both appear only when the names actually differ.";
 "pref.hideExplanatoryHintRowsAppended" = "Hide explanatory hint rows appended by the C layer (SIP / task port notes). Placeholder hints are still shown.";
 "pref.highlightExitedProcesses" = "Highlight exited processes";
 "pref.historyPoints" = "History points";
@@ -502,6 +524,7 @@
 "pref.memory" = "Memory";
 "pref.menuSignals" = "Menu Signals";
 "pref.menuWillShowSignals" = "Menu will show {0} signals";
+"pref.namePreview" = "  {0}   {1}   {2}   {3}     (main / helper / argv[0] differs / all three differ)";
 "pref.numberOfSamplesRetainedBy" = "Number of samples retained by the bottom process charts and the performance window.";
 "pref.offGivesTheUsualTwo" = "Off gives the usual two-state ascending / descending cycle.";
 "pref.offMakesRRefreshOnly" = "Off makes ⌘R refresh only the process list.";
@@ -516,7 +539,7 @@
 "pref.preferences" = "Preferences";
 "pref.presetApplied" = "Preset applied · {0}";
 "pref.previewHowAnExitedRow" = "Preview: how an exited row looks in the process list(✕ name prefix, 'Exited·N' in Status).";
-"pref.previewHowTheNameColumn" = "Preview: how the Name column renders (processes whose raw name matches are not annotated twice).";
+"pref.previewHowTheNameColumn" = "Preview of the Name column; identical names are never annotated twice, and raw / argv[0] are judged independently.";
 "pref.processFilterAppliedAtLaunch" = "Process filter applied at launch.";
 "pref.processListRefresh" = "Process list refresh";
 "pref.processName" = "Process Name";
@@ -545,7 +568,6 @@
 "pref.s7" = "2 s";
 "pref.s8" = "5 s";
 "pref.s9" = "0.5 s";
-"pref.sameBundleMainProcessHelper" = "  {0}        {1}     (same Bundle: main process / helper)";
 "pref.sampleDuration" = "sample duration";
 "pref.samplingInterval" = "Sampling interval";
 "pref.scanAppExtensions" = "Scan extensions in /Applications";
@@ -555,6 +577,7 @@
 "pref.selectAll" = "Select All";
 "pref.selectNone" = "Select None";
 "pref.selected" = "Selected {0} / {1}";
+"pref.showArgv0WhenDifferent" = "Show argv[0] name when it differs from the binary";
 "pref.showHintRowsInDetail" = "Show hint rows in detail tabs";
 "pref.showRawProcessNameAlongside" = "Show raw process name alongside";
 "pref.showSortDirectionTriangleIn" = "Show sort direction triangle in header";

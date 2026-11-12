@@ -94,10 +94,13 @@ int cproc_detail_aborted(void)
 }
 
 /*
- * proc_bsdinfo.pbi_flags 的位定义。
- * macOS SDK 只对部分位导出宏，PROC_FLAG_TRANSLATED（Rosetta 2）尤其容易缺失；
- * 这里逐个 #ifndef 兜底，与 proc_collect.c 保持同一套值。
- * SDK 已导出时以 SDK 值为准，不会重复定义。
+ * proc_bsdinfo.pbi_flags 的公开位定义，值来自 xnu bsd/sys/proc_info.h。
+ * 与 proc_collect.c 保持同一套常量；SDK 已导出时 #ifndef 不生效。
+ *
+ * 注意不要再补一个 PROC_FLAG_TRANSLATED：Rosetta 相关的位在
+ * #ifdef PRIVATE 的 proc_info_private.h 里，公开 SDK 不导出。曾经用
+ * 0x00002000 兜底，而 0x2000 其实是 PROC_FLAG_PSUGID（setuid 提权），
+ * 导致 sudo / login 等被误判成 Rosetta 转译进程。
  */
 #ifndef PROC_FLAG_SYSTEM
 #define PROC_FLAG_SYSTEM       0x00000001u
@@ -105,26 +108,32 @@ int cproc_detail_aborted(void)
 #ifndef PROC_FLAG_TRACED
 #define PROC_FLAG_TRACED       0x00000002u
 #endif
+#ifndef PROC_FLAG_INEXIT
+#define PROC_FLAG_INEXIT       0x00000004u
+#endif
+#ifndef PROC_FLAG_PPWAIT
+#define PROC_FLAG_PPWAIT       0x00000008u
+#endif
 #ifndef PROC_FLAG_LP64
-#define PROC_FLAG_LP64         0x00000004u
+#define PROC_FLAG_LP64         0x00000010u
 #endif
 #ifndef PROC_FLAG_SLEADER
-#define PROC_FLAG_SLEADER      0x00000008u
+#define PROC_FLAG_SLEADER      0x00000020u
 #endif
 #ifndef PROC_FLAG_CTTY
-#define PROC_FLAG_CTTY         0x00000010u
+#define PROC_FLAG_CTTY         0x00000040u
 #endif
 #ifndef PROC_FLAG_CONTROLT
-#define PROC_FLAG_CONTROLT     0x00000020u
+#define PROC_FLAG_CONTROLT     0x00000080u
+#endif
+#ifndef PROC_FLAG_THCWD
+#define PROC_FLAG_THCWD        0x00000100u
 #endif
 #ifndef PROC_FLAG_PSUGID
-#define PROC_FLAG_PSUGID       0x00000040u
+#define PROC_FLAG_PSUGID       0x00002000u
 #endif
 #ifndef PROC_FLAG_EXEC
-#define PROC_FLAG_EXEC         0x00000080u
-#endif
-#ifndef PROC_FLAG_TRANSLATED
-#define PROC_FLAG_TRANSLATED   0x00002000u   /* Rosetta 2 转译进程 */
+#define PROC_FLAG_EXEC         0x00004000u
 #endif
 
 /* proc_pidfdinfo / proc_pidinfo 的 SIZE 宏在不同 SDK 里可能缺失；
@@ -1735,17 +1744,19 @@ int cproc_mach_security(int32_t pid, cproc_lines_t *out)
     lb_addf(&b, "nice\t%d\t调度优先级修正", (int)bi.pbi_nice);
     lb_addf(&b, "BSD flags\t0x%08x\t见下方逐位说明", bi.pbi_flags);
 
-    enum { CPROC_NFLAGS = 9 };
+    enum { CPROC_NFLAGS = 11 };
     struct { uint32_t bit; const char *name; } flagdefs[CPROC_NFLAGS] = {
         { PROC_FLAG_SYSTEM,     "SYSTEM" },
         { PROC_FLAG_TRACED,     "TRACED" },
+        { PROC_FLAG_INEXIT,     "INEXIT" },
+        { PROC_FLAG_PPWAIT,     "PPWAIT" },
         { PROC_FLAG_LP64,       "LP64" },
         { PROC_FLAG_SLEADER,    "SLEADER" },
         { PROC_FLAG_CTTY,       "CTTY" },
         { PROC_FLAG_CONTROLT,   "CONTROLT" },
+        { PROC_FLAG_THCWD,      "THCWD" },
         { PROC_FLAG_PSUGID,     "PSUGID" },
         { PROC_FLAG_EXEC,       "EXEC" },
-        { PROC_FLAG_TRANSLATED, "TRANSLATED (Rosetta 2)" },
     };
     char flagstr[512] = { 0 };
     size_t used = 0;

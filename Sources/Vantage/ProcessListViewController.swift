@@ -40,10 +40,13 @@ final class NameCell: NSTableCellView {
         textField?.textColor = p.isExited
             ? AppColors.shared.color(.exitedText)
             : (p.stateName == "ZOMBIE" ? .secondaryLabelColor : .labelColor)
-        // 列宽有限时组合名可能被截断，tooltip 始终给出完整身份
+        // 列宽有限时组合名可能被截断，tooltip 明确列出
+        // bundle 名 / 声明的 exe / 实际 exe / argv[0] 这四个可能互不相同的值
         toolTip = L("list.nameTooltip", p.displayLabel,
                     p.rawName.isEmpty ? "—" : p.rawName)
+            + "\n" + p.identitySummary
             + (p.exepath.isEmpty ? "" : "\n\(p.exepath)")
+            + (p.argv0.isEmpty ? "" : "\n" + L("list.argv0Tooltip", p.argv0))
     }
 }
 
@@ -504,6 +507,9 @@ final class ProcessListViewController: NSViewController,
         }
         cell.configure(text, color: color,
                        alignment: def.numeric ? .right : .left)
+        // 架构列只显示主类别（Universal / Apple Silicon / Intel），
+        // hover 给出具体 slice 与运行时判定依据
+        cell.toolTip = def.id == "arch" ? proc.archTooltip : nil
         return cell
     }
 

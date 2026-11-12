@@ -43,6 +43,7 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
         case searchUseRegex = 314
         case globalSearchHeavyPages = 315
         case scanAppExtensions = 316
+        case showArgv0WhenDifferent = 317
         // 弹出菜单段 200–204 已占满，名称格式 / 语言另起一段
         case rawNameStyle = 205
         case language = 206
@@ -219,6 +220,8 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
                 L("pref.helpersXpcServicesAndRenderers"))
         check(.showRawNameWithBundle, L("pref.showRawProcessNameAlongside"),
               hint: L("pref.onlyAppendedForProcessesWith"))
+        check(.showArgv0WhenDifferent, L("pref.showArgv0WhenDifferent"),
+              hint: L("pref.argv0Hint"))
         check(.useLocalizedAppName, L("pref.useTheBundleSLocalized"),
               hint: L("pref.readsCFBundleDisplayNameCFBundleNameFromIn"))
         popup(.rawNameStyle, L("pref.rawNameFormat"),
@@ -762,6 +765,7 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
             (.highlightExited, p.highlightExited),
             (.alwaysConfirmDestructive, p.alwaysConfirmDestructive),
             (.showRawNameWithBundle, p.showRawNameWithBundle),
+            (.showArgv0WhenDifferent, p.showArgv0WhenDifferent),
             (.useLocalizedAppName, p.useLocalizedAppName),
             (.showDetailHints, p.showDetailHints),
             (.searchUseRegex, p.searchUseRegex),
@@ -790,14 +794,27 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
         syncNamePreview()
     }
 
-    /// 通用页名称预览：同一 Bundle 的主进程不追加、helper 追加 raw 名
+    /// 通用页名称预览：主进程不追加、helper 追加 raw 名、
+    /// /bin/sh（argv[0] 为 sh，规范 exe 为 bash）追加 argv[0] 名。
     private func syncNamePreview() {
         let p = Preferences.shared
         let main = p.useLocalizedAppName ? L("pref.weChat") : "WeChat"
         let helper = p.showRawNameWithBundle
             ? main + p.rawNameStyle.wrap("crashpad_handler") : main
+        let argv0Case = p.showArgv0WhenDifferent
+            ? "bash" + p.rawNameStyle.wrap("sh") : "bash"
+        // 三者互不相同：bundle 名 / 实际 exe / argv[0] 都不同。
+        // 此时两个括注不能同款，第二个要用「以 X 调用」区分。
+        var allDifferent = "Visual Studio Code"
+        let hasRaw = p.showRawNameWithBundle
+        if hasRaw { allDifferent += p.rawNameStyle.wrap("Electron") }
+        if p.showArgv0WhenDifferent {
+            allDifferent += hasRaw
+                ? " " + L("model.argv0Alias", "Code")
+                : p.rawNameStyle.wrap("Code")
+        }
         namePreviewLabel.stringValue =
-            L("pref.sameBundleMainProcessHelper", main, helper)
+            L("pref.namePreview", main, helper, argv0Case, allDifferent)
     }
 
     /// 把 AppColors 的当前值同步到色块、hex 框、预设下拉与预览条
@@ -906,6 +923,7 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
         case .highlightExited:          p.highlightExited = on
         case .alwaysConfirmDestructive: p.alwaysConfirmDestructive = on
         case .showRawNameWithBundle:    p.showRawNameWithBundle = on
+        case .showArgv0WhenDifferent:   p.showArgv0WhenDifferent = on
         case .useLocalizedAppName:      p.useLocalizedAppName = on
         case .showDetailHints:          p.showDetailHints = on
             // 提示行是详情页数据的一部分，清缓存后当前页立即重采

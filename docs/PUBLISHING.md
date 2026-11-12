@@ -14,7 +14,7 @@
 | `Packaging/Info.plist` → `NSHumanReadableCopyright` | `Copyright © 2026 nanacaret. Licensed under MIT.` |
 | README 版权行 | `© 2026 nanacaret` |
 | `Packaging/Info.plist` → `CFBundleIdentifier` | `io.github.nanacaret.Vantage`（按 GitHub 组织的反向域名惯例） |
-| `Packaging/Info.plist` → `CFBundleShortVersionString` / `CFBundleVersion` | `1.0` / `1` |
+| `Packaging/Info.plist` → `CFBundleShortVersionString` / `CFBundleVersion` | `1.0.1` / `1.0.1` |
 
 全仓库已无仓库地址占位符（原先的 OWNER 占位符已替换为 nanacaret）。若组织使用自有域名，
 可把 Bundle ID 换成对应反向域名；**改 ID 会让已保存的偏好与窗口位置失效**，
@@ -109,8 +109,56 @@ git status --ignored | head -50
 
 流程先跑 `python3 Tools/build_l10n.py` 并 `git diff --exit-code` 校验生成资源没有漂移，
 再依次调用 `./Scripts/build_app.sh`、`./Scripts/make_dmg.sh`。DMG 只依赖 macOS 自带的
-`hdiutil` / `shasum` / `gh`，不使用 `create-dmg` 之类第三方工具；除官方
-`checkout` / `*-artifact` 外没有第三方 action。
+`diskutil image` / `shasum` / `osascript` / `python3` / `gh`（旧系统回退 `hdiutil`），
+不使用 `create-dmg` 之类第三方工具；除官方 `checkout` / `*-artifact` 外没有第三方 action。
+
+**为什么用 `diskutil image`**：Apple 从 macOS 26 Tahoe 起给 `diskutil` 加了 `image`
+子命令，并在 macOS 27 的 `man hdiutil` 里明确把磁盘映像操作指向
+`diskutil image`（`hdiutil` 已标记弃用）。脚本主路径是：
+
+```bash
+diskutil image create from <stage> --format UDRW --volumeName Vantage rw.dmg
+diskutil image attach rw.dmg            # 挂载，写 Finder 视图
+diskutil eject <dev>
+diskutil image create from rw.dmg --format UDZO --volumeName Vantage Vantage.dmg
+diskutil image info Vantage.dmg         # 校验 Image Format: UDZO
+```
+
+能力检测（`diskutil image` 是否含 `create`）不通过、或主路径任一步失败时，
+**自动回退到 `hdiutil` 全链路**并清掉半成品：`hdiutil create -format UDRW` →
+`attach -mountpoint` → `convert -format UDZO` → `verify`。脚本输出里会打印
+`工具: diskutil image` 或 `工具: hdiutil (fallback)`。这样 macOS 26.4 开发机、
+`macos-26` CI runner 以及更早的系统都能产出同一份 DMG。
+
+一个能力差异需要知道：`diskutil image` **没有 verify 子命令**，也**不支持自定义
+挂载点**。前者改用 `diskutil image info` 检查 `Image Format: UDZO` + SHA-256 兜底；
+后者在 `/Volumes/Vantage` 已被占用时直接让主路径失败，交给 hdiutil 的
+`-mountpoint` 处理，避免挂到 `Vantage 1` 后 Finder 布局写错卷。
+
+**DMG 的拖拽引导**：镜像里放 `Vantage.app`、`/Applications` 快捷方式、隐藏的背景图
+（`.background/dmg-background.png`）、`README.txt` 与 `Install.command`。主路径先建可写
+UDRW 镜像并挂载（`diskutil image attach`），再用 Finder 的 AppleScript 设置图标视图
+（背景图、4 个图标定位、窗口尺寸），卸载后转成 UDZO 压缩镜像。背景图由
+`Tools/make_dmg_bg.py` 生成并**已入库**（`Packaging/dmg-background.png`），CI 不需要 Pillow。
+
+两个容易踩的 Finder 坑，脚本里都已处理：
+
+- **背景图路径必须是卷内文件的 POSIX 绝对路径 alias**。写成 HFS 相对路径
+  `file ".background:dmg-background.png"` 时，`tell disk` 上下文经常解析不到真实文件，
+  Finder 会静默忽略 —— 图标位置对了但背景仍是纯色。另外每个可选设置单独一个 `try`：
+  把 `arrangement` / `icon size` / `background picture` 挤在同一个 `try` 里，前两句
+  任何一句抛错都会把背景图一起跳过。AppleScript 末尾会把背景图是否设置成功读回成
+  `BG_OK=1/0`，脚本据此打印明确结果，不再把「视图设置成功」误当成「背景已生效」。
+- **隐藏辅助项**。可写卷挂载后系统会自动生成 `.fseventsd`，Finder 会写 `.DS_Store`。
+  卸载前对 `.background` / `.fseventsd` / `.DS_Store` 加 `chflags hidden`（装了 Xcode CLT
+  再补一层 `SetFile -a V`），并写 `.fseventsd/no_log` 抑制日志；flags 会随块级复制
+  保留进最终 UDZO。注意：如果本机开了 `AppleShowAllFiles`，Finder 仍可能显示这些
+  点开头的项，这是系统全局设置，不是 DMG 内容问题。
+
+无 GUI 会话时 Finder 自动化会超时或被拒（GitHub Actions 属于这种情况），脚本**自动降级**：
+不视为构建失败，DMG 照常产出，只是没有自定义视图；此时 `README.txt` 说明手动拖拽，
+`Install.command` 可双击一键安装。脚本输出里会打印 `视图: guided` 或 `视图: plain`，
+以及背景图是否被接受，便于核对实际结果。
 
 **Runner 与 SDK**：build job 跑在 `macos-26`，并显式把 `DEVELOPER_DIR` 指向
 `/Applications/Xcode_26.5.app/Contents/Developer` —— 与开发机（macOS 26.4 +

@@ -12,7 +12,7 @@
 
 | 约束 | 做法 |
 |---|---|
-| `PROC_FLAG_TRANSLATED` 等宏并非所有 SDK 都导出 | `proc_collect.c` / `proc_detail.c` 各有一套 `#ifndef PROC_FLAG_*` 兜底；`flagdefs` 显式声明为 `flagdefs[CPROC_NFLAGS]`，循环用常量而非 `sizeof` 推断 |
+| `pbi_flags` 的公开位 / `PROC_FLAG_TRANSLATED` 并不存在 | xnu `bsd/sys/proc_info.h` 只导出到 `PROC_FLAG_EXEC (0x4000)`，Rosetta 位在 `#ifdef PRIVATE` 的 `proc_info_private.h` 里，公开 SDK **不导出**。切勿硬编码兜底值：`0x00002000` 其实是 `PROC_FLAG_PSUGID`（setuid 提权），会把 `sudo` / `login` 等通用二进制整批误判成 Rosetta。两个 C 文件的 `#ifndef` 兜底一律用 xnu 公开头的真实值；`flagdefs` 只列公开位，用 `flagdefs[CPROC_NFLAGS]` 显式声明 |
 | `kill(2)` 需要显式声明 | 相关文件包含 `<signal.h>`；C99 起不允许隐式函数声明 |
 | `syscall(SYS_csops, …)` 的弃用警告 | `csops` 没有公开包装函数，Apple 也未给 `CS_OPS_*` 替代 API（警告建议的 `kdebug_signpost()` 只对应 `SYS_kdebug_trace`）。在 `#ifdef SYS_csops` 块内用 `clang diagnostic push / pop` 局部关掉 `-Wdeprecated-declarations`，不扩大到文件其它部分 |
 | `PROC_PID*INFO` 缓冲区 | 一律按 `PROC_PID*INFO_SIZE` 宏分配并用 `memcpy` 取字段，规避不同 SDK 的结构体字段名 / 布局差异 |
@@ -87,7 +87,13 @@ CoreGraphics。没有发现拖后腿的巨型表达式或重复编译单元。
 - 内存「已用」采用 `active + wired + compressed`（不含可回收的 `inactive` 文件缓存），
   与 macmon / Activity Monitor 口径一致；显示单位用 `2^30`。
 - `CS_*` 标志位表为 xnu 常见值，不同系统版本可能略有差异，界面中标注为参考值。
-- Rosetta 2 判定基于 `PROC_FLAG_TRANSLATED`（启发式），个别系统进程可能显示为未知。
+- `KERN_PROCARGS2` 对受保护进程或已退出进程可能读不到，此时 `argv[0]` 为空、
+  名称列不会追加调用名，概览页显示「—」；这不影响 `proc_pidpath` 得到的可执行路径。
+- 架构列显示**可执行文件包含哪些 Mach-O slice**（`proc_arch.c` 解析 FAT / thin 头），
+  不是运行时 ISA。Rosetta 标注只在「Apple Silicon 主机 + 二进制不含 arm64 slice」这一
+  Apple 明确规定的必然条件下出现；通用二进制被用户手动指定以 Rosetta 运行时，公开接口
+  无法反查实际选中的 slice，界面只显示 `Universal` / `通用` 并在 tooltip 里说明。
+  脚本或受保护路径读不到 Mach-O 头时退化为按主机类别显示，不猜 Rosetta。
 - 进程退出 / 新建极快时，选中项可能短暂丢失，下一次刷新自动恢复。
 - **激活窗口**依赖「辅助功能」授权与 `_AXUIElementGetWindow` 私有 SPI；SPI 不可用时
   退回按 bounds / 标题匹配，系统 UI 窗口、已关闭窗口或未向 AX 暴露的窗口返回

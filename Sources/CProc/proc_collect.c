@@ -26,34 +26,45 @@
 #include <mach/host_info.h>
 #include <mach/task_info.h>
 
-/* 某些 SDK 版本没有导出这些宏，做兜底（值来自 xnu sys/proc_info.h） */
+/* xnu bsd/sys/proc_info.h 的 pbi_flags 公开位。旧兜底把 1/2/4/8/0x10…
+ * 顺次编号，与真实值全部错位（例如 0x2000 其实是 PSUGID 而不是 LP64），
+ * 这里按 xnu 头文件逐项校正。SDK 已导出时 #ifndef 不生效。 */
 #ifndef PROC_FLAG_SYSTEM
 #define PROC_FLAG_SYSTEM     0x00000001
 #endif
 #ifndef PROC_FLAG_TRACED
 #define PROC_FLAG_TRACED     0x00000002
 #endif
+#ifndef PROC_FLAG_INEXIT
+#define PROC_FLAG_INEXIT     0x00000004
+#endif
+#ifndef PROC_FLAG_PPWAIT
+#define PROC_FLAG_PPWAIT     0x00000008
+#endif
 #ifndef PROC_FLAG_LP64
-#define PROC_FLAG_LP64       0x00000004
+#define PROC_FLAG_LP64       0x00000010
 #endif
 #ifndef PROC_FLAG_SLEADER
-#define PROC_FLAG_SLEADER    0x00000008
+#define PROC_FLAG_SLEADER    0x00000020
 #endif
 #ifndef PROC_FLAG_CTTY
-#define PROC_FLAG_CTTY       0x00000010
+#define PROC_FLAG_CTTY       0x00000040
 #endif
 #ifndef PROC_FLAG_CONTROLT
-#define PROC_FLAG_CONTROLT   0x00000020
+#define PROC_FLAG_CONTROLT   0x00000080
+#endif
+#ifndef PROC_FLAG_THCWD
+#define PROC_FLAG_THCWD      0x00000100
 #endif
 #ifndef PROC_FLAG_PSUGID
-#define PROC_FLAG_PSUGID     0x00000040
+#define PROC_FLAG_PSUGID     0x00002000
 #endif
 #ifndef PROC_FLAG_EXEC
-#define PROC_FLAG_EXEC       0x00000080
+#define PROC_FLAG_EXEC       0x00004000
 #endif
-#ifndef PROC_FLAG_TRANSLATED
-#define PROC_FLAG_TRANSLATED 0x00002000
-#endif
+/* 不再定义 PROC_FLAG_TRANSLATED：它在 #ifdef PRIVATE 的 proc_info_private.h
+ * 里，公开 SDK 不导出，任何硬编码的兜底值都可能与公开位撞车。
+ * 运行时是否经 Rosetta 改由 Mach-O 架构可靠推出，见下方 cproc_collect 末尾。 */
 #ifndef NODEV
 #define NODEV ((dev_t)(-1))
 #endif
@@ -91,6 +102,7 @@ const char *cproc_comm(const cproc_snapshot_t *p)    { return p ? p->comm    : "
 const char *cproc_name(const cproc_snapshot_t *p)    { return p ? p->name    : ""; }
 const char *cproc_cmdline(const cproc_snapshot_t *p) { return p ? p->cmdline : ""; }
 const char *cproc_exepath(const cproc_snapshot_t *p) { return p ? p->exepath : ""; }
+const char *cproc_argv0(const cproc_snapshot_t *p)   { return p ? p->argv0   : ""; }
 const char *cproc_tty_name(const cproc_snapshot_t *p)
 {
     return (p && p->tty_name[0]) ? p->tty_name : "??";
@@ -258,9 +270,13 @@ static int get_all_kinfo(struct kinfo_proc **out_procs, int *out_cnt)
  *     这里按 needed 动态分配并全程做边界检查。
  *   - 把缓冲区里所有以 '\0' 结尾的串（含 envp）都拼进命令行会混入环境变量；
  *     这里严格按 argc 取 argv[0..argc-1]。
+ *   - argv[0] 单独保留原始串：拼进 cmdline 后若参数含空格就无法还原，而
+ *     argv[0] 可能与 proc_pidpath 给出的规范可执行名不同（硬链接 /bin/sh
+ *     → /bin/bash、exec -a 自定义名、登录 shell 的 -bash 等）。
  */
 static void read_cmdline(int32_t pid, char *out, size_t outcap,
-                         char *exe, size_t execap)
+                         char *exe, size_t execap,
+                         char *argv0, size_t argv0cap)
 {
     int mib[3] = { CTL_KERN, KERN_PROCARGS2, (int)pid };
     size_t need = 0;
@@ -269,6 +285,7 @@ static void read_cmdline(int32_t pid, char *out, size_t outcap,
 
     out[0] = '\0';
     exe[0] = '\0';
+    if (argv0 && argv0cap) argv0[0] = '\0';
 
     if (sysctl(mib, 3, NULL, &need, NULL, 0) == 0 &&
         need > sizeof(int) && need <= CPROC_ARGV_MAX_BYTES()) {
@@ -282,10 +299,15 @@ static void read_cmdline(int32_t pid, char *out, size_t outcap,
                 memcpy(&argc, raw, sizeof(int));
                 if (argc < 0 || argc > CPROC_ARGC_MAX) argc = 0;
 
-                /* exe path */
+                /* exe path：同样按已知长度复制，不假设末尾一定有 NUL */
                 char *s = p;
                 while (p < end && *p) p++;
-                cstr_copy(exe, execap, s);
+                {
+                    size_t n = (size_t)(p - s);
+                    if (n >= execap) n = execap - 1;
+                    memcpy(exe, s, n);
+                    exe[n] = '\0';
+                }
                 if (p < end) p++;
 
                 /* 对齐用的多余 NUL */
@@ -297,7 +319,15 @@ static void read_cmdline(int32_t pid, char *out, size_t outcap,
                 for (int i = 0; i < argc && p < end; i++) {
                     char *arg = p;
                     while (p < end && *p) p++;
-                    size_t len = (size_t)(p - arg);
+                    size_t raw_len = (size_t)(p - arg);
+                    size_t len = raw_len;
+                    /* 缓冲区最后一个串可能没有 NUL 结尾，不能当 C 字符串用，
+                     * 按已知长度复制，避免读越界。 */
+                    if (i == 0 && argv0 && argv0cap) {
+                        size_t n = raw_len < argv0cap ? raw_len : argv0cap - 1;
+                        memcpy(argv0, arg, n);
+                        argv0[n] = '\0';
+                    }
                     if (written && o < olimit) *o++ = ' ';
                     size_t room = (size_t)(olimit - o);
                     if (len > room) len = room;
@@ -456,12 +486,12 @@ int cproc_collect(cproc_system_t *out)
                               sizeof(it->tty_name)) != 0)
             cstr_copy(it->tty_name, sizeof(it->tty_name), "??");
 
-        it->translated = (it->flags & PROC_FLAG_TRANSLATED) ? 1u : 0u;
         if (it->name[0] == '\0')
             cstr_copy(it->name, sizeof(it->name), it->comm);
 
         read_cmdline(pid, it->cmdline, sizeof(it->cmdline),
-                     it->exepath, sizeof(it->exepath));
+                     it->exepath, sizeof(it->exepath),
+                     it->argv0, sizeof(it->argv0));
 
         out->threads_total += it->threads;
         n++;
@@ -471,6 +501,25 @@ int cproc_collect(cproc_system_t *out)
     out->items = items;
     out->count = n;
     collect_system(out, n);
+
+    /* 架构切片 + 运行时 Rosetta 判定。必须放在 collect_system 之后：
+     * 判定需要 out->host_arm64，而它是在那里由 hw.optional.arm64 填充的。
+     *
+     * 「Apple Silicon 主机 + 二进制只有 x86 slice」是 Apple 文档明确的
+     * 必然转译条件；反过来 universal / arm64-only 二进制即使系统选了
+     * Rosetta 也不能仅凭公开接口断定，因此不猜测、不误报。 */
+    const uint32_t arm_bits = CPROC_ARCH_ARM64 | CPROC_ARCH_ARM64E |
+                              CPROC_ARCH_ARM64_32 | CPROC_ARCH_ARM;
+    const uint32_t x86_bits = CPROC_ARCH_X86 | CPROC_ARCH_X86_64;
+    for (int i = 0; i < n; i++) {
+        cproc_snapshot_t *it = &items[i];
+        uint32_t a = cproc_exec_archs(it->exepath);
+        it->exec_archs = a;
+        int has_arm = (a & arm_bits) != 0;
+        int has_x86 = (a & x86_bits) != 0;
+        it->translated = (out->host_arm64 && a != 0 && has_x86 && !has_arm)
+                         ? 1u : 0u;
+    }
     return 0;
 }
 

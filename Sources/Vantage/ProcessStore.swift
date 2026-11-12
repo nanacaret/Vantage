@@ -311,7 +311,9 @@ final class ProcessStore {
                 // 字段级匹配：正则里的 ^ / $ 作用于单个字段，
                 // 而不是被拼成一整行后失配（^WeChat$ 能精确命中名称）。
                 let fields = [p.displayLabel, loc, p.displayName,
-                              p.rawName, p.name, p.comm, p.cmdline,
+                              p.rawName, p.argv0, p.argv0Name,
+                              p.bundleExecutableName, p.executableName,
+                              p.name, p.comm, p.cmdline,
                               String(p.pid), p.userName, p.ttyName,
                               p.exepath, p.bundlePath ?? "",
                               p.stateName, p.archName]

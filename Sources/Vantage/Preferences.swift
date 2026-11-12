@@ -193,6 +193,15 @@ final class Preferences {
         set { setBool(newValue, "showRawNameWithBundle") }
     }
 
+    /// argv[0] 的名字与真实可执行文件 basename 不同时，在名称列一并标注。
+    /// 默认开：/bin/sh 是 /bin/bash 的硬链接、登录 shell 的 -bash、
+    /// `exec -a` 自定义名等场景，光看 exe basename 判断不出调用方式。
+    /// 与 bundle 的 raw 名共用 rawNameStyle 的包裹格式。
+    var showArgv0WhenDifferent: Bool {
+        get { bool("showArgv0WhenDifferent", true) }
+        set { setBool(newValue, "showArgv0WhenDifferent") }
+    }
+
     /// 主名称改用 Bundle 的本地化显示名（CFBundleDisplayName / CFBundleName）。
     /// 默认关，保持原来的 .app 目录名口径；开启后与 Activity Monitor 一致。
     var useLocalizedAppName: Bool {
@@ -329,7 +338,8 @@ final class Preferences {
         "confirmBeforeSignal", "alwaysConfirmDestructive",
         "refreshInvalidatesDetail", "visibleSignals",
         "highlightExited", "exitedKeepRefreshes",
-        "showRawNameWithBundle", "useLocalizedAppName", "rawNameStyle",
+        "showRawNameWithBundle", "showArgv0WhenDifferent",
+        "useLocalizedAppName", "rawNameStyle",
         "showDetailHints", "language",
         "searchUseRegex", "globalSearchHeavyPages", "globalSearchMaxRows",
         "ioregMaxNodes", "scanAppExtensions",

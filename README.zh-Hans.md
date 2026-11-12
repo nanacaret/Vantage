@@ -37,7 +37,7 @@ Vantage 两者都不需要，且只是一个**可本地构建的单个 `.app`**�
 
 | 模块 | 内容 |
 |---|---|
-| 进程列表 | 树形 / 扁平、14 列三态排序、0.5–5 秒刷新、过滤、正则搜索、本地化名 + 原始可执行名、已退出进程高亮 |
+| 进程列表 | 树形 / 扁平、14 列三态排序、0.5–5 秒刷新、过滤、正则搜索、本地化名 + 原始可执行名、可选显示与 bin 不同的 argv[0] 调用名、已退出进程高亮 |
 | 检查器 | 13 个页签：概览、文件、环境、镜像、网络、监控、Pipe 对端、内存映射、TTY、窗口、签名、Mach、命令 |
 | 信号 | 右键菜单 / 主菜单，31 个 Darwin 信号可配置显示（默认 12 个）、确认策略、暂停继续、`sample` 采样 |
 | 性能监控（⌘P） | CPU/GPU/ANE/DRAM 功耗、整机功率（SMC `PSTR`）、CPU/GPU 温度、P-state residency 分簇频率、磁盘与网络吞吐、逐通道诊断 |
@@ -113,6 +113,13 @@ open build/Vantage.app
 预发布；push `v*` tag 会创建带版本号的正式 Release。两者都附上 DMG 与 SHA-256 校验文件。
 Pull request 同样会构建 DMG，只是上传为 Actions artifact（保留 14 天）。
 
+**安装**：打开 DMG 后把 `Vantage.app` 拖到 `Applications` 快捷方式上即可 —— 镜像里带
+背景箭头和已排好位置的图标，照着拖就行。若没有出现引导背景（无 GUI 会话的 CI 构建会
+自动降级为普通窗口），DMG 里仍有 `README.txt` 说明同样步骤，也可以双击
+`Install.command` 一键拷贝到 `/Applications`。
+`.background` 与 `.fseventsd` 已用 `chflags hidden` 隐藏；若本机开启了「显示隐藏文件」，
+Finder 仍可能列出它们，这是系统全局设置，不是 DMG 内容问题。
+
 CI 产物是 **ad-hoc 签名、未公证**的（GitHub Actions 里没有 Developer ID 证书）。
 首次打开被 Gatekeeper 拦截时，右键 `Vantage.app` → **打开**，或在
 「系统设置 → 隐私与安全性」中允许。打开前建议先校验：
@@ -186,7 +193,7 @@ python3 Tools/build_l10n.py
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 贡献指南 |
 | [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) | 参考与致谢 |
 | [.github/workflows/build.yml](.github/workflows/build.yml) | CI：编译、DMG、nightly / tag Release |
-| [Scripts/make_dmg.sh](Scripts/make_dmg.sh) | 本地 DMG 打包（`hdiutil`，无第三方工具） |
+| [Scripts/make_dmg.sh](Scripts/make_dmg.sh) | 本地 UDZO DMG 打包（`diskutil image`，旧系统回退 `hdiutil`，无第三方工具） |
 
 ## 已知限制与免责声明
 

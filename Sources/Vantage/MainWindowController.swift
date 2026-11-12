@@ -398,6 +398,7 @@ final class MainWindowController: NSWindowController {
     @objc private func storeUpdated() { updateStatus() }
 
     @objc private func refreshClicked(_ sender: Any?) {
+        ProcBridge.flushExecArchCache()
         AppContext.shared.store.refresh()
         if Preferences.shared.refreshInvalidatesDetail {
             NotificationCenter.default.post(name: .procDetailForceRefresh, object: nil)

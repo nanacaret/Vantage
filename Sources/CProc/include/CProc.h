@@ -28,7 +28,21 @@ extern "C" {
 #define CPROC_NAME_MAX     128
 #define CPROC_CMDLINE_MAX  4096
 #define CPROC_EXEPATH_MAX  1024
+#define CPROC_ARGV0_MAX    1024
 #define CPROC_TTY_MAX      128
+
+/* ---------- 可执行文件架构切片（Mach-O cputype） ----------
+ * cproc_snapshot_t.exec_archs 是这些位的按位或；0 表示「读不到」，
+ * 与「只有一个未知架构」(CPROC_ARCH_OTHER) 区分开。 */
+#define CPROC_ARCH_X86       0x0001u  /* i386 */
+#define CPROC_ARCH_X86_64    0x0002u
+#define CPROC_ARCH_ARM       0x0004u  /* 32-bit ARM */
+#define CPROC_ARCH_ARM64     0x0008u
+#define CPROC_ARCH_ARM64_32  0x0010u  /* watchOS */
+#define CPROC_ARCH_PPC       0x0020u
+#define CPROC_ARCH_PPC64     0x0040u
+#define CPROC_ARCH_ARM64E    0x0100u  /* cpusubtype=ARM64E，同时置 ARM64 位 */
+#define CPROC_ARCH_OTHER     0x8000u
 
 typedef struct {
     int32_t  pid;
@@ -39,7 +53,8 @@ typedef struct {
     int32_t  priority;
     uint32_t status;          /* SIDL / SRUN / SSLEEP / SSTOP / SZOMB */
     uint32_t flags;           /* proc_bsdinfo.pbi_flags */
-    uint32_t translated;      /* 1 = Rosetta 2 转译进程（启发式） */
+    uint32_t translated;      /* 1 = 运行时经 Rosetta 2（由二进制架构可靠推出） */
+    uint32_t exec_archs;      /* CPROC_ARCH_* 位掩码：可执行文件含哪些 slice */
     uint32_t pgid;
 
     uint64_t start_sec;
@@ -69,6 +84,7 @@ typedef struct {
     char     name[CPROC_NAME_MAX];
     char     cmdline[CPROC_CMDLINE_MAX];
     char     exepath[CPROC_EXEPATH_MAX];
+    char     argv0[CPROC_ARGV0_MAX];   /* KERN_PROCARGS2 里的原始 argv[0] */
     char     tty_name[CPROC_TTY_MAX];  /* /dev/ttysNNN，无终端时为 "??" */
 } cproc_snapshot_t;
 
@@ -103,6 +119,12 @@ typedef struct {
 /* ---------- 进程快照 ---------- */
 int  cproc_collect(cproc_system_t *out);
 void cproc_free(cproc_system_t *sys);
+
+/* 读 Mach-O 文件头，返回 CPROC_ARCH_* 位掩码（0 = 读不到 / 非 Mach-O）。
+ * 按路径 + dev/ino/mtime/size 缓存，TTL 内不做任何系统调用。
+ * cproc_exec_archs_flush() 供强制刷新时清空缓存。 */
+uint32_t cproc_exec_archs(const char *path);
+void     cproc_exec_archs_flush(void);
 
 /* ---------- 单进程详情 ---------- */
 int  cproc_open_files   (int32_t pid, cproc_lines_t *out);
@@ -149,6 +171,7 @@ const char *cproc_comm   (const cproc_snapshot_t *p);
 const char *cproc_name   (const cproc_snapshot_t *p);
 const char *cproc_cmdline(const cproc_snapshot_t *p);
 const char *cproc_exepath(const cproc_snapshot_t *p);
+const char *cproc_argv0   (const cproc_snapshot_t *p);
 const char *cproc_tty_name(const cproc_snapshot_t *p);
 const char *cproc_line   (const cproc_lines_t *lines, int32_t index);
 const char *cproc_state_name(uint32_t status);
