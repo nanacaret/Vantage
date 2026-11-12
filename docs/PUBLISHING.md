@@ -1,25 +1,32 @@
-# 新建仓库初始化清单
+# 仓库现状与维护
 
-这份清单用于把当前源码推到一个**全新的 GitHub 仓库**。逐项确认后再 `git push`。
-工程本身已经是可直接 `swift build -c release` 的完整仓库，不需要额外转换。
+仓库已公开在 **[github.com/nanacaret/Vantage](https://github.com/nanacaret/Vantage)**，
+默认分支 `main`，CI（`build.yml`）处于通过状态，`nightly` 滚动预发布与 `v*` tag 的
+正式 Release 由 workflow 自动维护。本文记录当前设定与后续维护动作，不再是初始化清单。
 
-## 1. 确认发布身份
+工程本身可直接 `swift build -c release`，不需要额外转换。
 
-仓库已按 **nanacaret** 组织身份设定，推送前核对一遍：
+## 1. 发布身份与版本
+
+当前设定如下，改动其中任何一项都要同步检查中英文 README、CI 与打包脚本：
 
 | 位置 | 已设定值 |
 |---|---|
-| GitHub 仓库地址 | `github.com/nanacaret/Vantage`（中英文 README 的 clone URL、本文件末尾 `git remote` 示例） |
+| GitHub 仓库地址 | `github.com/nanacaret/Vantage`（中英文 README 的 clone URL、CI badge 与 Release 链接） |
 | `LICENSE` 版权行 | `Copyright (c) 2026 nanacaret` |
 | `Packaging/Info.plist` → `NSHumanReadableCopyright` | `Copyright © 2026 nanacaret. Licensed under MIT.` |
 | README 版权行 | `© 2026 nanacaret` |
 | `Packaging/Info.plist` → `CFBundleIdentifier` | `io.github.nanacaret.Vantage`（按 GitHub 组织的反向域名惯例） |
 | `Packaging/Info.plist` → `CFBundleShortVersionString` / `CFBundleVersion` | `1.0.1` / `1.0.1` |
 
-全仓库已无仓库地址占位符（原先的 OWNER 占位符已替换为 nanacaret）。若组织使用自有域名，
-可把 Bundle ID 换成对应反向域名；**改 ID 会让已保存的偏好与窗口位置失效**，
-本项目尚未分发，无存量数据需要考虑。`Packaging/Info.plist` 的
-`NSAccessibilityUsageDescription` 为中英双语文案，可按需本地化到 `InfoPlist.strings`。
+全仓库已无仓库地址占位符。若组织改用自有域名，可把 Bundle ID 换成对应反向域名；
+**改 ID 会让已保存的偏好、配色、列宽与窗口位置重置一次**，在已有分发产物时应先权衡。
+`Packaging/Info.plist` 的 `NSAccessibilityUsageDescription` 为中英双语文案，
+可按需本地化到 `InfoPlist.strings`。
+
+版本号目前为 `1.0.1`（`CFBundleShortVersionString` 与 `CFBundleVersion` 一致）。
+发新版时只改 `Packaging/Info.plist`，再 push 一个 `v*` tag 触发正式 Release；
+DMG 文件名里的版本号取自 tag，不需要另外配置。
 
 ## 2. 截图（已就位）
 
@@ -51,7 +58,7 @@
 
 ## 4. 生成资源与可复现性
 
-生成文件已入库，因此 `swift build` 不需要 Python。推送前跑一次确认没有漂移：
+生成文件已入库，因此 `swift build` 不需要 Python。改动文案或生成器后，提交前跑一次确认没有漂移：
 
 ```bash
 python3 Tools/build_l10n.py
@@ -77,15 +84,18 @@ git status --ignored | head -50
 - `.DS_Store`、`*.p12` / `*.cer` / `*.provisionprofile`、`.env*`
 - 私钥、证书、本地生成的 `dist/*.dmg`、本地崩溃报告
 
-`.gitignore` 已覆盖上述条目，但首次 `git add -A` 前值得再看一眼。
+`.gitignore` 已覆盖上述条目，但每次 `git add` 前值得再看一眼。
 
 反过来，`Scripts/`（构建与打包脚本）与 `Packaging/`（`Info.plist`、entitlements）**是要入库的源文件**，
 不要当成生成物清掉；被忽略的只是它们运行后产生的 `build/` 与 `dist/`。根目录只保留
 文档、`LICENSE`、`.gitignore`、`.github/` 与 SwiftPM 必需的 `Package.swift`。
 
-## 6. 仓库设置建议
+## 6. 仓库设置
+
+仓库已公开，`main` 为默认分支。About 目前**未填写描述、网站与 topics**，建议补上：
 
 - Description：`A native macOS process manager and system monitor in C + Swift/AppKit`
+- Website：`https://github.com/nanacaret/Vantage`
 - Topics：`macos` `swift` `appkit` `process-manager` `system-monitor` `ioregistry` `apple-silicon` `devtools`
 - 开启 Issues；可选开启 Discussions
 - **Settings → Actions → General → Workflow permissions 选
@@ -199,17 +209,20 @@ Fork 上的 push 会在**该 fork 自己**的仓库里发 `nightly`，不会写�
 - 不需要 root，SIP 下也无法读取其他进程内存；
 - 见 `README.md` 的 Known limitations & disclaimer、`SECURITY.md`。
 
-## 9. 最后一遍
+## 9. 改动后的复核
 
 ```bash
 grep -rn 'SPDX-License-Identifier' Sources Tools | wc -l   # 应与源码文件数一致
 grep -rn '/Users/\|/tmp/' --include='*.swift' --include='*.c' --include='*.h' . | head
 ```
 
-第二条应无输出：源码里不应出现个人路径。确认无误后：
+第二条应无输出：源码里不应出现个人路径。提交前再看一眼改动范围：
 
 ```bash
-git init && git add -A && git commit -m "Initial commit: Vantage"
-git remote add origin git@github.com:nanacaret/Vantage.git
-git push -u origin main
+git status --short
+git diff --stat
+git log --oneline -5
 ```
+
+推到 `main` 后 CI 会重建 `nightly`；要出正式版再补一个 `v*` tag。
+Releases 页面同时保留滚动预发布与版本化 Release，无需手工上传 DMG。

@@ -104,7 +104,7 @@ open build/Vantage.app
 `iconutil` 生成的 `Assets/Vantage.icns`）
 并做 ad-hoc 签名，全程不需要 root。同一目录内增量编译通常 1–3 秒。
 
-> **Bundle ID**：`io.github.nanacaret.Vantage`。若以其他域名分发，可替换成自己的反向域名标识。
+> **Bundle ID**：`io.github.nanacaret.Vantage`，与发布组织一致。
 > 注意改 ID 会让已保存的偏好、配色、列宽与窗口位置重置一次。
 
 ## 预构建 DMG
@@ -189,7 +189,7 @@ python3 Tools/build_l10n.py
 | [README.md](README.md) | English |
 | [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md) | 数据来源、统计口径、SIP 替代方案、各窗口实现取舍 |
 | [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) | SDK 差异、构建约束、已知限制、可定制点 |
-| [docs/PUBLISHING.md](docs/PUBLISHING.md) | 新建仓库初始化清单 |
+| [docs/PUBLISHING.md](docs/PUBLISHING.md) | 仓库现状、Release 流程与维护说明 |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 贡献指南 |
 | [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) | 参考与致谢 |
 | [.github/workflows/build.yml](.github/workflows/build.yml) | CI：编译、DMG、nightly / tag Release |

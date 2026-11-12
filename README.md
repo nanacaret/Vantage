@@ -111,9 +111,8 @@ open build/Vantage.app
 `Assets/Vantage.icns` via `iconutil`) and ad-hoc signs it. It never needs root. A clean release build takes ~20 s;
 incremental rebuilds in the same directory are 1–3 s.
 
-> **Bundle identifier**: `io.github.nanacaret.Vantage`. Replace it with your own
-> reverse-DNS identifier if you distribute under a different domain. Note that changing it resets saved
-> preferences, colors, column widths and window frames once.
+> **Bundle identifier**: `io.github.nanacaret.Vantage`, matching the publishing org.
+> Changing it resets saved preferences, colors, column widths and window frames once.
 
 ## Prebuilt DMG
 
@@ -208,7 +207,7 @@ twice produces no diff. Generated sources carry an SPDX header and are committed
 | [README.zh-Hans.md](README.zh-Hans.md) | 中文说明 |
 | [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md) | Data sources, measurement conventions, SIP alternatives, per-window design decisions (Chinese) |
 | [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) | SDK differences, build constraints, known limitations, customization points (Chinese) |
-| [docs/PUBLISHING.md](docs/PUBLISHING.md) | Checklist for initializing a new GitHub repository |
+| [docs/PUBLISHING.md](docs/PUBLISHING.md) | Repository status, release workflow and maintenance notes |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute |
 | [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) | Inspirations and references |
 | [.github/workflows/build.yml](.github/workflows/build.yml) | CI: build, DMG, nightly / tag Releases |
