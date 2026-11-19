@@ -49,6 +49,10 @@ final class ActionTableView: NSTableView {
     var onModifierClick: ((Int, Int) -> Void)?
     let clickGate = ModifierClickGate()
 
+    /// 右键：(行, 列)。列传 -1 表示落在表头 / 空白区。
+    /// 菜单本身由各 VC 通过 `menu` 提供，这里只负责把「右键那一格」记下来。
+    var onContextMenu: ((Int, Int) -> Void)?
+
     override func mouseDown(with event: NSEvent) {
         let loc = convert(event.locationInWindow, from: nil)
         let row = self.row(at: loc)
@@ -62,5 +66,18 @@ final class ActionTableView: NSTableView {
             return
         }
         super.mouseDown(with: event)
+    }
+
+    /// 右键时先按 macOS 惯例选中该行（已在多选集合内则保留多选），
+    /// 再把命中位置交给宿主，最后才让 AppKit 弹出 `menu`。
+    override func rightMouseDown(with event: NSEvent) {
+        let loc = convert(event.locationInWindow, from: nil)
+        let row = self.row(at: loc)
+        let col = self.column(at: loc)
+        if row >= 0, !selectedRowIndexes.contains(row) {
+            selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        }
+        onContextMenu?(row, col)
+        super.rightMouseDown(with: event)
     }
 }

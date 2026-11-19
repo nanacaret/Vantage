@@ -145,7 +145,7 @@ final class Preferences {
     // 行为开关
     // ---------------------------------------------------------------
 
-    /// 详情按页惰性加载；关闭则回到「一次选中采全部 13 页」（用于对比/排错）
+    /// 详情按页惰性加载；关闭则回到「一次选中采全部 14 页」（用于对比/排错）
     var lazyDetailLoading: Bool {
         get { bool("lazyDetailLoading", true) }
         set { setBool(newValue, "lazyDetailLoading") }
@@ -238,6 +238,15 @@ final class Preferences {
     var language: L10n.Language {
         get { L10n.language }
         set { L10n.language = newValue }
+    }
+
+    /// 检查器页签每行的排布方式。
+    /// 0 = 自动：按每个页签标题的实际宽度贪心换行，行内不再拉伸，
+    /// 因此每行个数可以不同，也不会有大片空白（默认）。
+    /// 2…14 = 固定个数：每行等宽等分，行数 = ceil(页签数 / 该值)。
+    var detailTabsPerRow: Int {
+        get { int("detailTabsPerRow", 0, 0, 14) }
+        set { setInt(newValue, "detailTabsPerRow", 0, 14) }
     }
 
     // ---------------------------------------------------------------
@@ -343,6 +352,7 @@ final class Preferences {
         "showDetailHints", "language",
         "searchUseRegex", "globalSearchHeavyPages", "globalSearchMaxRows",
         "ioregMaxNodes", "scanAppExtensions",
+        "detailTabsPerRow",
     ]
 
     /// 把 C 侧字段下发给采集层，并通知各模块刷新运行时选项。

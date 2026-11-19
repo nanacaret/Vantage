@@ -6,22 +6,38 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-echo "▸ swift build -c release ..."
-swift build -c release
+# 某些环境（如受限沙箱）里 SwiftPM 跑 manifest 会报
+#   sandbox-exec: sandbox_apply: Operation not permitted
+# 这时可以用 VANTAGE_SWIFT_FLAGS="--disable-sandbox" 覆盖。
+SWIFT_FLAGS="${VANTAGE_SWIFT_FLAGS:-}"
+
+echo "▸ swift build -c release $SWIFT_FLAGS ..."
+swift build -c release $SWIFT_FLAGS
 
 # 只解析 manifest 并打印路径，不会触发第二次编译（<1s）。
-BIN="$(swift build -c release --show-bin-path)"
+BIN="$(swift build -c release $SWIFT_FLAGS --show-bin-path)"
 APP="$(pwd)/build/Vantage.app"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp "$BIN/Vantage" "$APP/Contents/MacOS/Vantage"
+# MCP stdio 服务一并放进 bundle：MCP 客户端可以直接指向
+# build/Vantage.app/Contents/MacOS/vantage-mcp，不用另外找 .build 路径。
+if [ -x "$BIN/vantage-mcp" ]; then
+    cp "$BIN/vantage-mcp" "$APP/Contents/MacOS/vantage-mcp"
+fi
 cp Packaging/Info.plist "$APP/Contents/Info.plist"
 chmod +x "$APP/Contents/MacOS/Vantage"
 
 # 本地化资源：L10n 优先读 Bundle.main 里的 en.lproj/Localizable.strings，
 # 读不到时退回编译进二进制的内嵌表，所以 swift run 也能正常显示英文。
+# AppleScript 术语表：必须放在 Resources 根目录，并由 Info.plist 的
+# OSAScriptingDefinition 指向；缺了它 osascript 只能看到标准套件。
+for SDEF in Resources/*.sdef; do
+    if [ -f "$SDEF" ]; then cp "$SDEF" "$APP/Contents/Resources/"; fi
+done
+
 for LPROJ in Resources/*.lproj; do
     # 用 if 而非 `&&`：set -e 下 glob 无匹配时 `[ -d ]` 失败会直接退出脚本
     if [ -d "$LPROJ" ]; then cp -R "$LPROJ" "$APP/Contents/Resources/"; fi

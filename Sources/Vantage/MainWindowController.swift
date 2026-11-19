@@ -13,22 +13,31 @@ final class InspectorWindowController: NSWindowController, NSWindowDelegate {
         self.pid = pid
         let t = DetailTabViewController()
         t.fixedPID = pid
+        // 检查器窗口矮：每个页签的过滤框默认收起，⌘F 唤出并聚焦
+        t.hidesFilterByDefault = true
         self.tabs = t
 
-        // 13 个 2 字页签（新增「窗口」），比 12 个时略宽一点避免 segmented
-        // control 把末尾标签截掉；窗口页有 6 列，也需要横向空间。
+        // 14 个页签按偏好里的「每行上限」拆成多行（默认 7 → 两行），
+        // 不再依赖一行 segmented control 的宽度；窗口页有 6 列，仍需横向空间。
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1140, height: 620),
                          styleMask: [.titled, .closable, .miniaturizable, .resizable],
                          backing: .buffered, defer: false)
         // 标题也带名称：主表能看到 raw，检查器里同样不用猜是哪个进程
-        let label = AppContext.shared.store.process(withPID: pid)?.displayLabel
-        w.title = label.map { L("window.inspectorPid", $0, pid) }
-            ?? L("window.inspectorPid2", pid)
+        // 用「含已退出」的快照：退出后再打开检查器也能看到进程名
+        let snap = AppContext.shared.store.snapshotIncludingExited(for: pid)
+        w.title = snap.map {
+            L("window.inspectorPid", $0.displayLabel, pid)
+                + ($0.isExited ? L("list.exitedSuffix") : "")
+        } ?? L("window.inspectorPid2", pid)
         w.minSize = NSSize(width: 660, height: 420)
         w.center()
         super.init(window: w)
 
-        w.contentViewController = t
+        w.contentViewController = DetailTabPaneController(tabs: t)
+        // 容器视图没有 intrinsic 尺寸，setContentViewController 可能把窗口
+        // 缩到 minSize；这里把默认尺寸显式还原并重新居中。
+        w.setContentSize(NSSize(width: 1140, height: 620))
+        w.center()
         w.delegate = self
     }
 
@@ -37,6 +46,11 @@ final class InspectorWindowController: NSWindowController, NSWindowDelegate {
     /// 全局搜索命中行：切到目标页签并定位到那一行
     func focus(tab: Int, textKeys: [String]) {
         tabs.focus(tab: tab, textKeys: textKeys)
+    }
+
+    /// ⌘F：当前页过滤框的显隐（唤出时自动聚焦，见 DetailTabViewController）
+    func toggleFilter() {
+        tabs.toggleFilter()
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -58,6 +72,8 @@ final class MainWindowController: NSWindowController {
 
     private let listVC = ProcessListViewController()
     private let detailTabs = DetailTabViewController()
+    /// 详情页签容器（多行页签条 + 原来的 NSTabViewController）
+    private lazy var detailPane = DetailTabPaneController(tabs: detailTabs)
     private let statsVC = StatsPanelViewController()
 
     private var outerSplit: NSSplitViewController!
@@ -126,6 +142,30 @@ final class MainWindowController: NSWindowController {
 
     private lazy var inspectorButton: NSButton =
         UI.button(L("window.inspector"), target: self, action: #selector(inspectorClicked(_:)))
+
+    /// 提权入口（非 root 时可点）。已 root 时显示「已以 root 运行」并禁用。
+    private lazy var privilegeButton: NSButton = {
+        let b = UI.button(L("priv.runAsRoot"), target: self,
+                          action: #selector(escalateClicked(_:)))
+        b.font = NSFont.systemFont(ofSize: 11)
+        b.toolTip = L("priv.runAsRootTip")
+        return b
+    }()
+
+    // 权限不足时的**内联**提示条（不弹窗）：原因 + 「立即提权」+ 关闭
+    private let permissionBar = NSView(frame: .zero)
+    private let permissionLabel = UI.label("", size: 11, color: .systemOrange)
+    private let permissionButton = NSButton(frame: .zero)
+    private let permissionCloseButton = NSButton(frame: .zero)
+    private var permissionBarHeight: NSLayoutConstraint!
+    /// 正在提权（授权对话框已弹出 / 等待 root 实例）——期间禁止重复触发
+    private var escalating = false
+    /// 后台那次 `relaunchAsRoot()` 的结果：nil = 还没返回（被阻塞着）
+    private var launchResult: Bool?
+    /// 点击提权那一刻已经存在的 Vantage 窗口所属进程。
+    /// 只有「这之后新出现的窗口」才算提权成功 —— 否则用户本来就开着两个实例时，
+    /// 会把它误判成新实例而直接退出。
+    private var baselineWindowPIDs: Set<Int32> = []
 
     init() {
         // 不要用 .fullSizeContentView：内容视图会延伸到标题栏下方，
@@ -205,7 +245,7 @@ final class MainWindowController: NSWindowController {
         let bar = NSStackView(views: [
             refreshButton, viewSegment, filterPopup, intervalPopup,
             regexButton, searchField,
-            terminateButton, forceButton, inspectorButton,
+            terminateButton, forceButton, inspectorButton, privilegeButton,
         ])
         bar.orientation = .horizontal
         bar.spacing = 6
@@ -225,7 +265,7 @@ final class MainWindowController: NSWindowController {
         let controls: [NSView] = [refreshButton, viewSegment, filterPopup,
                                   intervalPopup, regexButton,
                                   terminateButton, forceButton,
-                                  inspectorButton]
+                                  inspectorButton, privilegeButton]
         for control in controls {
             control.setContentCompressionResistancePriority(.defaultHigh,
                                                             for: .horizontal)
@@ -276,6 +316,62 @@ final class MainWindowController: NSWindowController {
             hintLabel.centerYAnchor.constraint(equalTo: bottomBar.centerYAnchor),
         ])
 
+        // 权限提示条：默认收起（高度 0），出错时展开显示原因 + 一键提权。
+        // 用「内联条」而不是 NSAlert，是因为这类失败（EPERM）往往只需要提权，
+        // 弹窗会打断操作且必须手动关掉。
+        permissionBar.wantsLayer = true
+        permissionBar.layer?.backgroundColor =
+            NSColor.systemOrange.withAlphaComponent(0.14).cgColor
+        permissionBar.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(permissionBar)
+
+        permissionLabel.lineBreakMode = .byTruncatingMiddle
+        permissionLabel.setContentCompressionResistancePriority(.defaultLow,
+                                                          for: .horizontal)
+        permissionButton.title = L("priv.elevateNow")
+        permissionButton.bezelStyle = .rounded
+        permissionButton.font = NSFont.systemFont(ofSize: 11)
+        permissionButton.target = self
+        permissionButton.action = #selector(escalateClicked(_:))
+        permissionButton.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+
+        permissionCloseButton.title = "✕"
+        permissionCloseButton.bezelStyle = .inline
+        permissionCloseButton.isBordered = false
+        permissionCloseButton.font = NSFont.systemFont(ofSize: 11)
+        permissionCloseButton.target = self
+        permissionCloseButton.action = #selector(dismissHint(_:))
+        permissionCloseButton.toolTip = L("priv.dismiss")
+        permissionCloseButton.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+
+        for v in [permissionLabel, permissionButton, permissionCloseButton] {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            permissionBar.addSubview(v)
+        }
+        permissionBarHeight = permissionBar.heightAnchor.constraint(equalToConstant: 0)
+        permissionBar.isHidden = true
+        NSLayoutConstraint.activate([
+            permissionBar.topAnchor.constraint(equalTo: bar.bottomAnchor),
+            permissionBar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            permissionBar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            permissionBarHeight,
+
+            permissionLabel.leadingAnchor.constraint(equalTo: permissionBar.leadingAnchor,
+                                               constant: 10),
+            permissionLabel.centerYAnchor.constraint(equalTo: permissionBar.centerYAnchor),
+            permissionLabel.trailingAnchor.constraint(
+                lessThanOrEqualTo: permissionButton.leadingAnchor, constant: -8),
+
+            permissionButton.trailingAnchor.constraint(
+                equalTo: permissionCloseButton.leadingAnchor, constant: -6),
+            permissionButton.centerYAnchor.constraint(equalTo: permissionBar.centerYAnchor),
+
+            permissionCloseButton.trailingAnchor.constraint(
+                equalTo: permissionBar.trailingAnchor, constant: -10),
+            permissionCloseButton.centerYAnchor.constraint(equalTo: permissionBar.centerYAnchor),
+            permissionCloseButton.widthAnchor.constraint(equalToConstant: 18),
+        ])
+
         // 外层：上 = 进程列表，下 = 详情 + 统计
         outerSplit = NSSplitViewController()
         _ = outerSplit.view
@@ -286,7 +382,7 @@ final class MainWindowController: NSWindowController {
         innerSplit = NSSplitViewController()
         _ = innerSplit.view
         innerSplit.splitView.isVertical = true
-        innerSplit.addSplitViewItem(NSSplitViewItem(viewController: detailTabs))
+        innerSplit.addSplitViewItem(NSSplitViewItem(viewController: detailPane))
         innerSplit.addSplitViewItem(NSSplitViewItem(viewController: statsVC))
 
         let bottomVC = NSViewController()
@@ -302,7 +398,7 @@ final class MainWindowController: NSWindowController {
         outerSplit.view.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(outerSplit.view)
         NSLayoutConstraint.activate([
-            outerSplit.view.topAnchor.constraint(equalTo: bar.bottomAnchor),
+            outerSplit.view.topAnchor.constraint(equalTo: permissionBar.bottomAnchor),
             outerSplit.view.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             outerSplit.view.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             outerSplit.view.bottomAnchor.constraint(equalTo: bottomBar.topAnchor),
@@ -310,7 +406,7 @@ final class MainWindowController: NSWindowController {
 
         listVC.view.heightAnchor
             .constraint(greaterThanOrEqualToConstant: 220).isActive = true
-        detailTabs.view.widthAnchor
+        detailPane.view.widthAnchor
             .constraint(greaterThanOrEqualToConstant: 360).isActive = true
         statsVC.view.widthAnchor
             .constraint(greaterThanOrEqualToConstant: 160).isActive = true
@@ -324,6 +420,7 @@ final class MainWindowController: NSWindowController {
 
         syncToolbar()
         syncSearchMode()
+        syncPrivilegeUI()
         NotificationCenter.default.addObserver(
             self, selector: #selector(storeUpdated),
             name: .procStoreDidUpdate, object: nil)
@@ -338,6 +435,139 @@ final class MainWindowController: NSWindowController {
 
     func focusSearch() {
         window?.makeFirstResponder(searchField)
+    }
+
+    // -----------------------------------------------------------------
+    // 提权 / 权限提示（内联，不弹窗）
+    // -----------------------------------------------------------------
+
+    /// 权限不足时在顶部展开一条提示：原因 + 「立即提权」+ 关闭。
+    /// - canEscalate: 已是 root 时为 false —— 那种情况是 SIP / entitlements
+    ///   限制，再提权也没用，只显示原因。
+    func showPermissionHint(_ reason: String, canEscalate: Bool = true) {
+        permissionLabel.stringValue = reason
+        permissionButton.isHidden = !canEscalate
+        setHintVisible(true)
+    }
+
+    func hidePermissionHint() { setHintVisible(false) }
+
+    private func setHintVisible(_ visible: Bool) {
+        guard permissionBar.isHidden == visible else { return }
+        permissionBar.isHidden = !visible
+        permissionBarHeight.constant = visible ? 30 : 0
+    }
+
+    @objc private func dismissHint(_ sender: Any?) {
+        setHintVisible(false)
+    }
+
+    /// 提权：以 root 重启本进程。系统会弹授权对话框（Authorization Services，
+    /// 不是 sudo）；新实例起来后退出当前实例。
+    ///
+    /// **这里有个必须绕开的系统行为**：`AuthorizationExecuteWithPrivileges`
+    /// 要等子进程**退出**才返回（不是「启动后立即返回」）。所以：
+    /// 1. 它必须放在后台线程 —— 放主线程会把整个窗口冻住，点都点不动；
+    /// 2. **不能等它返回再干活** —— 它会在 root 实例整个生命周期里一直阻塞。
+    ///    真正的退出判断是「另一个 Vantage 窗口出现」，从点击那一刻就开始轮询，
+    ///    与那次调用何时返回无关。后台线程的返回值只用来区分「用户取消了授权」。
+    @objc private func escalateClicked(_ sender: Any?) {
+        guard !Privilege.isRoot, !escalating else { return }
+        escalating = true
+        launchResult = nil
+        baselineWindowPIDs = vantageWindowPIDs()
+        permissionLabel.stringValue = L("priv.restarting")
+        permissionButton.isHidden = true
+        setHintVisible(true)
+        privilegeButton.isEnabled = false
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            // 这一行可能几分钟都不返回：root 实例退出时才返回
+            let launched = Privilege.relaunchAsRoot()
+            DispatchQueue.main.async { self?.launchResult = launched }
+        }
+        // 不等上面那行，立刻开始盯着新实例
+        awaitRootInstance()
+    }
+
+    /// 轮询等待 root 实例出现（新进程要加载界面，通常 0.3–1.5s）。
+    /// 找到 → 直接退出；超时 → 恢复界面，允许再次尝试。
+    private func awaitRootInstance() {
+        guard let exe = Bundle.main.executablePath else {
+            return endEscalation(L("priv.noNewInstance"))
+        }
+        let me = getpid()
+        var tries = 0
+
+        func poll() {
+            tries += 1
+            // 窗口检查很便宜（CGWindowList 几十条），每轮都做
+            if anotherVantageWindowVisible() {
+                exit(0)
+            }
+            // 进程表快照要遍历几百个进程，降频到每 3 轮（≈1 秒）一次，
+            // 免得等待期间主线程每隔 300ms 抖一下
+            if tries % 3 == 0,
+               Privilege.otherInstanceRunning(exe: exe, excluding: me) {
+                exit(0)
+            }
+            // 后台那次调用已经明确失败（用户点了取消 / 授权错误）：马上反馈，
+            // 不必等满 10 秒
+            if launchResult == false {
+                endEscalation(L("priv.cancelled"))
+                return
+            }
+            if tries >= 33 {                       // ≈10 秒
+                endEscalation(L("priv.noNewInstance"))
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { poll() }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { poll() }
+    }
+
+    /// 窗口列表里是否已有「另一个进程」的 Vantage 窗口。
+    ///
+    /// 两个信号取「或」的原因：提权后的进程属于 root，非 root 调用方读它的
+    /// `proc_pidinfo(PROC_PIDTBSDINFO)` 可能直接被拒（实测如此），进程表里就
+    /// 查不到这个实例；而窗口的 owner PID 是 CG 层面的公开信息，一定看得到。
+    /// 只要新实例把窗口画出来了，就说明它已经可用。
+    private func anotherVantageWindowVisible() -> Bool {
+        !vantageWindowPIDs().subtracting(baselineWindowPIDs).isEmpty
+    }
+
+    /// 当前所有「本 App 的普通窗口」所属进程（不含自己）
+    private func vantageWindowPIDs() -> Set<Int32> {
+        let me = Int32(getpid())
+        let name = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String
+            ?? ProcessInfo.processInfo.processName
+        var pids: Set<Int32> = []
+        for w in WindowLocator.onScreenWindows(force: true)
+        where w.ownerPID != me && w.ownerName == name && w.layer == 0 {
+            pids.insert(w.ownerPID)
+        }
+        return pids
+    }
+
+    private func endEscalation(_ message: String) {
+        escalating = false
+        launchResult = nil
+        permissionLabel.stringValue = message
+        permissionButton.isHidden = false
+        privilegeButton.isEnabled = !Privilege.isRoot
+    }
+
+    /// 按钮与提示文案跟随当前身份
+    func syncPrivilegeUI() {
+        if Privilege.isRoot {
+            privilegeButton.title = L("priv.runningAsRoot")
+            privilegeButton.isEnabled = false
+            privilegeButton.toolTip = nil
+        } else {
+            privilegeButton.title = L("priv.runAsRoot")
+            privilegeButton.isEnabled = true
+            privilegeButton.toolTip = L("priv.runAsRootTip")
+        }
     }
 
     func syncToolbar() {

@@ -63,17 +63,20 @@ private enum GlobalSearchSources {
                 .lines(ProcBridge.detail(kind, pid: pid))
             }
         }
-        out.append(c("files",       1, .openFiles))
-        out.append(c("env",         2, .environment))
-        out.append(c("sockets",     4, .sockets))
-        out.append(c("monitoring",  5, .monitoring))
-        out.append(c("tty",         8, .tty))
-        out.append(c("mach",       11, .machSecurity))
-        out.append(GlobalSearchSource(key: "windows", tabIndex: 9,
+        // 页签下标统一取自 DetailTab，避免插页签后这里静默错位
+        out.append(c("files",       DetailTab.files.rawValue, .openFiles))
+        out.append(c("env",         DetailTab.env.rawValue, .environment))
+        out.append(c("sockets",     DetailTab.sockets.rawValue, .sockets))
+        out.append(c("monitoring",  DetailTab.monitoring.rawValue, .monitoring))
+        out.append(c("tty",         DetailTab.tty.rawValue, .tty))
+        out.append(c("mach",        DetailTab.mach.rawValue, .machSecurity))
+        out.append(GlobalSearchSource(key: "windows",
+                                      tabIndex: DetailTab.windows.rawValue,
                                       heavy: false) { pid, _ in
             .lines(WindowLocator.detailLines(for: pid))
         })
-        out.append(GlobalSearchSource(key: "signing", tabIndex: 10,
+        out.append(GlobalSearchSource(key: "signing",
+                                      tabIndex: DetailTab.signing.rawValue,
                                       heavy: false) { pid, p in
             .pairs(SigningReader.read(pid: pid, path: p.exepath).rows)
         })
@@ -85,9 +88,12 @@ private enum GlobalSearchSources {
                     .lines(ProcBridge.detail(kind, pid: pid))
                 }
             }
-            out.append(h("dylibs",     3, .dylibs))
-            out.append(h("pipePeers",  6, .pipePeers))
-            out.append(h("regions",    7, .regions))
+            out.append(h("dylibs",     DetailTab.dylibs.rawValue, .dylibs))
+            // 线程清单要为每个进程逐线程调 proc_pidinfo，跟 vm_map 枚举一样
+            // 归到「重活」：只在偏好里打开重活页时才参与全局搜索。
+            out.append(h("threads",    DetailTab.threads.rawValue, .threads))
+            out.append(h("pipePeers",  DetailTab.pipePeers.rawValue, .pipePeers))
+            out.append(h("regions",    DetailTab.regions.rawValue, .regions))
         }
         return out
     }

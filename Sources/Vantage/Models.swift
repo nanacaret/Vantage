@@ -74,7 +74,19 @@ struct ProcessSnapshot {
 
     var cpuTimeNS: UInt64 { cpuUserNS + cpuSysNS }
 
-    var stateName: String { String(cString: cproc_state_name(status)) }
+    /// 状态名：内核返回值只有 6 种，先把字符串表建好，别每渲染一格就
+    /// `String(cString:)` 新建一次（状态列每秒会被渲染几十次）。
+    private static let stateNames: [String] = (0..<8).map {
+        String(cString: cproc_state_name(UInt32($0)))
+    }
+
+    /// 已退出（宽限期内的快照）不再展示内核里的旧状态，避免显示成「RUNNING」
+    var stateName: String {
+        if isExited { return L("detail.stateExited") }
+        let i = Int(status)
+        return (i >= 0 && i < Self.stateNames.count)
+            ? Self.stateNames[i] : Self.stateNames[0]
+    }
 
     var userName: String { UserNameCache.shared.name(uid) }
 

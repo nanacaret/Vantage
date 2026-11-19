@@ -415,4 +415,15 @@ final class ProcessStore {
     func process(withPID pid: Int32) -> ProcessSnapshot? {
         processes.first { $0.pid == pid }
     }
+
+    /// 存活进程 → 直接返回；已退出但还在宽限期 → 返回**退出前那一帧的快照**。
+    ///
+    /// 只给「展示」用（检查器 / 窗口标题）。动作类调用（发信号、采样…）必须继续走
+    /// `process(withPID:)`，否则会对着已经不存在的 PID 发信号。
+    func snapshotIncludingExited(for pid: Int32) -> ProcessSnapshot? {
+        if let live = processes.first(where: { $0.pid == pid }) { return live }
+        guard var rec = exiting[pid] else { return nil }
+        rec.snapshot.exitRemaining = rec.remaining
+        return rec.snapshot
+    }
 }

@@ -292,4 +292,75 @@ C_EN_OVERRIDE = {
   "No",
  "否":
   "No",
+
+ # ---- 线程页（cproc_threads）----
+ "线程名":
+  "Thread Name",
+ "用户态":
+  "User",
+ "内核态":
+  "System",
+ "优先级（当前 / 基准 / 上限）":
+  "Priority (cur / base / max)",
+ "调度策略":
+  "Policy",
+ "运行中":
+  "Running",
+ "等待中":
+  "Waiting",
+ "不可中断":
+  "Uninterruptible",
+ "已终止":
+  "Halted",
+ "分时":
+  "Timeshare",
+ "实时轮转":
+  "Real-time RR",
+ "实时 FIFO":
+  "Real-time FIFO",
+ "已换出 ":
+  "Swapped ",
+ "空闲 ":
+  "Idle ",
+ "（未命名）":
+  "(unnamed)",
+ "无效的 PID":
+  "invalid PID",
+ "无法枚举线程（%s）%s":
+  "cannot enumerate threads (%s)%s",
+ "内存不足，无法读取线程列表":
+  "out of memory; cannot read the thread list",
+ "；其他用户的进程需要 root（工具栏「提权」）":
+  "; other users' processes require root (Run as Root in the toolbar)",
+ "共 %d 个线程":
+  "%d threads",
+ "PROC_PIDLISTTHREADS 返回 %d 条，本页列出 %d 条":
+  "PROC_PIDLISTTHREADS returned %d; this page lists %d",
+ "读取失败的线程":
+  "Unreadable threads",
+ "线程在枚举与读取之间退出属正常现象":
+  "a thread exiting between enumeration and read is normal",
+ "线程数超过上限，仅显示前 2000 个":
+  "thread count exceeds the limit; only the first 2000 are shown",
+ "线程名来自 pthread_setname_np；未命名的线程在系统里本来就没有名字，不是读取失败":
+  "Thread names come from pthread_setname_np; unnamed threads have no name in the system — this is not a read failure",
+ "CPU 为单线程占用率（100% = 一个核），用户态 / 内核态是累计时间；数据来源 PROC_PIDTHREADINFO":
+  "CPU is per-thread usage (100% = one core); user/system are cumulative; source: PROC_PIDTHREADINFO",
+
+ "%d 个":
+  "%d",
+
+ "CPU 时间（用户 / 内核）":
+  "CPU Time (user / system)",
+ "%d 个（枚举与读取之间退出属正常现象）":
+  "%d (a thread exiting between enumeration and read is normal)",
+
+ "线程清单来自 PROC_PIDLISTTHREADS + PROC_PIDTHREADINFO（每个线程一次系统调用）":
+  "Thread list comes from PROC_PIDLISTTHREADS + PROC_PIDTHREADINFO (one syscall per thread)",
+
+ "优先级 / 策略":
+  "Priority / Policy",
+
+ "策略短码：TS 分时 / RR 轮转 / FIFO 实时；优先级为「当前 / 基准 / 上限」":
+  "Policy codes: TS timeshare / RR round-robin / FIFO real-time; priority is cur / base / max",
 }

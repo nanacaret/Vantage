@@ -20,6 +20,10 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
 
     static let shared = PreferencesWindowController()
 
+    /// 窗口下限。两段式行布局在 560pt 宽度下说明文字仍有 320pt 以上，
+    /// 再窄就只能靠频繁换行 + 竖向滚动。
+    private static let minWindowSize = NSSize(width: 560, height: 460)
+
     private enum Tag: Int {
         // 数值
         case maxRegions = 100, pipeCacheMs, argvMaxKB, fdMaxMB, smcMaxKeys
@@ -47,6 +51,7 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
         // 弹出菜单段 200–204 已占满，名称格式 / 语言另起一段
         case rawNameStyle = 205
         case language = 206
+        case inspectorTabsPerRow = 207
     }
 
     /// 样式页控件的 tag 段，避开上面的 Tag 段；信号页 checkbox 用信号编号 1–31
@@ -77,9 +82,9 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
     private var signalChecks: [Int32: NSButton] = [:]
     private let signalCountLabel = UI.label("", size: 10,
                                             color: .secondaryLabelColor)
-    private let previewLabel = NSTextField(labelWithString: "")
+    private let previewLabel = UI.wrappingLabel("", size: 11)
     /// 通用页「进程名称显示」的实时预览行
-    private let namePreviewLabel = NSTextField(labelWithString: "")
+    private let namePreviewLabel = UI.wrappingLabel("", size: 11)
     private let statusLabel = UI.label(L("pref.appliedImmediatelyNoRestartNeeded"), size: 10,
                                        color: .secondaryLabelColor)
     private var l10nObserver: NSObjectProtocol?
@@ -89,11 +94,20 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
                          styleMask: [.titled, .closable, .miniaturizable, .resizable],
                          backing: .buffered, defer: false)
         w.title = L("pref.preferences")
-        w.minSize = NSSize(width: 560, height: 460)
+        w.minSize = Self.minWindowSize
+        // AppKit 会在首次布局时把窗口收成 contentView 的 fittingSize；
+        // minSize 只管用户拖拽，contentMinSize 才能挡住这次自动收缩。
+        w.contentMinSize = Self.minWindowSize
+        // 偏好窗口不参与 macOS「重新打开窗口」的状态恢复：恢复是异步的，
+        // 会在 showWindow 之后把窗口覆盖成某个旧版本存下的窄 frame，
+        // 让刚 clamp 过的宽度又缩回去（且每次启动都复现）。
+        w.isRestorable = false
         w.center()
         // 与主窗口一致：FrameAutosaveName 在当前 SDK 是 String 别名，
         // 直接传字符串，不做 NSWindow.FrameAutosaveName(...) 类型构造。
-        w.setFrameAutosaveName("VantagePreferences")
+        // V2：旧的一行式布局可能把窗口存成 412pt 宽（低于 minSize），
+        // 换名让那份额外狭窄的 frame 失效，首次打开回到 660×760 默认值。
+        w.setFrameAutosaveName("VantagePreferencesV2")
         super.init(window: w)
         buildUI()
         // 用 block observer 而非 target/selector：relocalizeSelf() 是无参方法，
@@ -118,9 +132,29 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
         // 静态控件（section 标题、hint、按钮名、popup 选项、窗口标题）在
         // buildUI 时生成一次；每次打开按当前语言就地转换，重开即生效。
         relocalizeSelf()
+        rebuildLanguagePopup()
         super.showWindow(sender)
+        // 放在 showWindow 之后：frame autosave 是在首次 orderFront 时才恢复的，
+        // 之前 clamp 会被恢复出来的旧尺寸覆盖。
+        clampToMinSize()
         window?.makeKeyAndOrderFront(nil)
         AppActivate.front()
+    }
+
+    /// setFrameAutosaveName 会恢复上次的 frame；旧版本可能存过比 minSize
+    /// 还窄的尺寸（当时一行式布局横向溢出，用户把窗口拉得很窄）。恢复后
+    /// 再套一次下限，避免每次打开都是「一列文字 + 大量竖向滚动」。
+    private func clampToMinSize() {
+        guard let w = window else { return }
+        let minSize = Self.minWindowSize
+        // contentViewController 赋值等路径可能改写 window.minSize，这里补回。
+        w.minSize = minSize
+        w.contentMinSize = minSize
+        var f = w.frame
+        guard f.width < minSize.width || f.height < minSize.height else { return }
+        f.size.width = max(f.width, minSize.width)
+        f.size.height = max(f.height, minSize.height)
+        w.setFrame(f, display: false)
     }
 
     /// 语言切换后把本窗口已显示的中文 key / 英文译文转成当前语言。
@@ -130,6 +164,20 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
         if let v = w.contentView { L10n.relocalize(v) }
         // 名称预览是动态拼接的，重新生成一次
         syncNamePreview()
+    }
+
+    /// 语言下拉按枚举重建一次。
+    ///
+    /// 旧实现只靠 convertDisplayed 就地换标题，而 NSPopUpButton 继承自
+    /// NSButton，relocalize 里给 popup 设 .title 等于「追加一个菜单项」，
+    /// 于是每切一次语言就多出几条「简体中文」，选中它们还会映射到
+    /// 错误的 rawValue（index 越界 → fallback 到 .system/English）。
+    private func rebuildLanguagePopup() {
+        guard let p = popups[Tag.language.rawValue] else { return }
+        let sel = L10n.language.rawValue
+        p.removeAllItems()
+        p.addItems(withTitles: L10n.Language.allCases.map { $0.title })
+        p.selectItem(at: min(max(sel, 0), p.numberOfItems - 1))
     }
 
     // -----------------------------------------------------------------
@@ -235,7 +283,7 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
         namePreviewLabel.isBezeled = false
         namePreviewLabel.isEditable = false
         namePreviewLabel.translatesAutoresizingMaskIntoConstraints = false
-        namePreviewLabel.heightAnchor.constraint(equalToConstant: 24).isActive = true
+        namePreviewLabel.heightAnchor.constraint(greaterThanOrEqualToConstant: 24).isActive = true
         addFullWidth(namePreviewLabel)
         addFullWidth(makeHintRow(L("pref.previewHowTheNameColumn")))
         syncNamePreview()
@@ -247,6 +295,10 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
         popup(.language, L("pref.language"),
               L10n.Language.allCases.map { $0.title },
               hint: L("pref.followSystemSimplifiedChineseEnglish"))
+        // 自动 = 0；其余项直接是「每行个数」（2…14）
+        popup(.inspectorTabsPerRow, L("pref.inspectorTabsPerRow"),
+              [L("pref.autoByWidth")] + (2...14).map { "\($0)" },
+              hint: L("pref.inspectorTabsPerRowHint"))
 
         // ---- 通用页：排序与行为 ----
         section(L("pref.sortingBehavior"), L("pref.threeStateHeaderCycleClick"))
@@ -336,26 +388,38 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
         }
         applyTab(0)
 
-        let root = NSViewController()
-        root.view = NSView()
-        window.contentViewController = root
-        root.view.addSubview(segment)
-        root.view.addSubview(container)
-        root.view.addSubview(footer)
+        // 直接用 contentView，不用 contentViewController：后者会按 root.view
+        // 的 fittingSize 反过来把窗口收窄（实测 660 → 412），而偏好行的
+        // 说明文字需要窗口宽度才能排成两行。
+        // 显式给一个非零 frame：contentView 为 zero frame 时，首次布局会
+        // 把窗口收缩到子视图的最小 fittingSize。
+        let rootView = NSView(frame: window.contentLayoutRect)
+        rootView.autoresizingMask = [.width, .height]
+        window.contentView = rootView
+        // 首次布局时 AppKit 会把窗口收到内容的最小 fittingSize（412pt）。
+        // 在 contentView 上加一条 required 下限，Auto Layout 就不会允许
+        // 窗口比 560pt 更窄。
+        rootView.widthAnchor.constraint(
+            greaterThanOrEqualToConstant: Self.minWindowSize.width).isActive = true
+        rootView.heightAnchor.constraint(
+            greaterThanOrEqualToConstant: 420).isActive = true
+        rootView.addSubview(segment)
+        rootView.addSubview(container)
+        rootView.addSubview(footer)
         NSLayoutConstraint.activate([
-            segment.topAnchor.constraint(equalTo: root.view.topAnchor, constant: 10),
-            segment.centerXAnchor.constraint(equalTo: root.view.centerXAnchor),
+            segment.topAnchor.constraint(equalTo: rootView.topAnchor, constant: 10),
+            segment.centerXAnchor.constraint(equalTo: rootView.centerXAnchor),
             segment.widthAnchor.constraint(greaterThanOrEqualToConstant: 260),
             segment.heightAnchor.constraint(equalToConstant: 26),
 
-            container.leadingAnchor.constraint(equalTo: root.view.leadingAnchor),
-            container.trailingAnchor.constraint(equalTo: root.view.trailingAnchor),
+            container.leadingAnchor.constraint(equalTo: rootView.leadingAnchor),
+            container.trailingAnchor.constraint(equalTo: rootView.trailingAnchor),
             container.topAnchor.constraint(equalTo: segment.bottomAnchor, constant: 10),
             container.bottomAnchor.constraint(equalTo: footer.topAnchor),
 
-            footer.leadingAnchor.constraint(equalTo: root.view.leadingAnchor),
-            footer.trailingAnchor.constraint(equalTo: root.view.trailingAnchor),
-            footer.bottomAnchor.constraint(equalTo: root.view.bottomAnchor),
+            footer.leadingAnchor.constraint(equalTo: rootView.leadingAnchor),
+            footer.trailingAnchor.constraint(equalTo: rootView.trailingAnchor),
+            footer.bottomAnchor.constraint(equalTo: rootView.bottomAnchor),
             footer.heightAnchor.constraint(equalToConstant: 38),
         ])
 
@@ -409,7 +473,7 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
         previewLabel.isBezeled = false
         previewLabel.isEditable = false
         previewLabel.translatesAutoresizingMaskIntoConstraints = false
-        previewLabel.heightAnchor.constraint(equalToConstant: 24).isActive = true
+        previewLabel.heightAnchor.constraint(greaterThanOrEqualToConstant: 24).isActive = true
         addFullWidth(previewLabel)
         addFullWidth(makeHintRow(L("pref.previewHowAnExitedRow")))
 
@@ -487,9 +551,8 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
         case .control:     note = L("pref.changesRunState")
         case .harmless:    note = ""
         }
-        let hint = UI.label(def.summary + note, size: 10,
-                            color: .tertiaryLabelColor)
-        hint.lineBreakMode = .byTruncatingTail
+        let hint = UI.wrappingLabel(def.summary + note, size: 10,
+                                    color: .tertiaryLabelColor)
         hint.setContentHuggingPriority(.defaultLow, for: .horizontal)
         hint.setContentCompressionResistancePriority(.defaultLow,
                                                      for: .horizontal)
@@ -565,10 +628,7 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
     }
 
     private func makeHintRow(_ text: String) -> NSView {
-        let h = UI.label(text, size: 10, color: .tertiaryLabelColor)
-        h.lineBreakMode = .byWordWrapping
-        h.maximumNumberOfLines = 2
-        return h
+        UI.wrappingLabel(text, size: 10, color: .tertiaryLabelColor)
     }
 
     private func colorRow(_ key: AppColorKey) {
@@ -617,6 +677,13 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
     // 通用行构造（activeStack 决定加到哪一页）
     // -----------------------------------------------------------------
 
+    /// 行内两列的固定尺寸：左列标题、右列控件起点。
+    /// 行宽在 560pt 的最小窗口下仍有约 500pt，说明文字可用 320pt 以上。
+    private enum Metric {
+        static let labelWidth: CGFloat = 168
+        static let gap: CGFloat = 10
+    }
+
     private func addFullWidth(_ v: NSView) {
         guard let stack = activeStack else { return }
         stack.addView(v, in: .bottom)
@@ -627,9 +694,7 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
 
     private func section(_ title: String, _ hint: String) {
         let t = UI.label(title, size: 13, weight: .semibold)
-        let h = UI.label(hint, size: 10, color: .secondaryLabelColor)
-        h.lineBreakMode = .byWordWrapping
-        h.maximumNumberOfLines = 3
+        let h = UI.wrappingLabel(hint, size: 10, color: .secondaryLabelColor)
         let box = NSStackView()
         box.orientation = .vertical
         box.spacing = 2
@@ -648,35 +713,66 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
         wrap.heightAnchor.constraint(greaterThanOrEqualToConstant: 38).isActive = true
     }
 
+    /// 偏好行的两段式布局：第一行「标题 + 控件」，第二行说明文字（缩进到
+    /// 控件列下）按可用宽度换行。之前把说明挤在控件右侧、且 NSTextField
+    /// 单行截尾，长描述既不换行又会把 documentView 撑宽，窗口里就出现了
+    /// 横向滚动 / 左侧被裁掉。
     private func makeRow(_ labelText: String, controls: [NSView],
                          hint: String) -> NSView {
-        let label = UI.label(labelText, size: 11, weight: .medium)
-        label.alignment = .right
+        let label = UI.wrappingLabel(labelText, size: 11, weight: .medium,
+                                     alignment: .right)
         label.translatesAutoresizingMaskIntoConstraints = false
-        label.widthAnchor.constraint(equalToConstant: 140).isActive = true
+        label.widthAnchor.constraint(equalToConstant: Metric.labelWidth).isActive = true
+        label.setContentHuggingPriority(.required, for: .horizontal)
+        label.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         let controlBox = NSStackView()
         controlBox.orientation = .horizontal
         controlBox.spacing = 6
+        controlBox.alignment = .centerY
         controlBox.distribution = .fill
-        for c in controls { controlBox.addView(c, in: .trailing) }
+        for c in controls { controlBox.addView(c, in: .leading) }
         controlBox.translatesAutoresizingMaskIntoConstraints = false
-        controlBox.widthAnchor.constraint(equalToConstant: 190).isActive = true
+        controlBox.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        controlBox.setContentCompressionResistancePriority(.defaultLow,
+                                                           for: .horizontal)
 
-        let hintLabel = UI.label(hint, size: 10, color: .tertiaryLabelColor)
-        hintLabel.lineBreakMode = .byWordWrapping
-        hintLabel.maximumNumberOfLines = 3
-        hintLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        hintLabel.setContentCompressionResistancePriority(.defaultLow,
-                                                          for: .horizontal)
+        let top = NSStackView()
+        top.orientation = .horizontal
+        top.spacing = Metric.gap
+        top.alignment = .centerY
+        top.distribution = .fill
+        top.addView(label, in: .leading)
+        top.addView(controlBox, in: .trailing)
+        top.translatesAutoresizingMaskIntoConstraints = false
 
         let row = NSStackView()
-        row.orientation = .horizontal
-        row.spacing = 10
-        row.distribution = .fill
-        row.addView(label, in: .leading)
-        row.addView(controlBox, in: .center)
-        row.addView(hintLabel, in: .trailing)
+        row.orientation = .vertical
+        row.spacing = 1
+        row.alignment = .leading
+        row.addView(top, in: .top)
+        top.widthAnchor.constraint(equalTo: row.widthAnchor).isActive = true
+
+        if !hint.isEmpty {
+            let hintLabel = UI.wrappingLabel(hint, size: 10,
+                                             color: .tertiaryLabelColor)
+            // 用显式约束而不是 NSStackView 的 gravity：短说明在 trailing
+            // gravity 下会被推到最右边，长说明才从控件列开始，视觉上不齐。
+            let hintRow = NSView()
+            hintRow.translatesAutoresizingMaskIntoConstraints = false
+            hintLabel.translatesAutoresizingMaskIntoConstraints = false
+            hintRow.addSubview(hintLabel)
+            NSLayoutConstraint.activate([
+                hintLabel.leadingAnchor.constraint(
+                    equalTo: hintRow.leadingAnchor,
+                    constant: Metric.labelWidth + Metric.gap),
+                hintLabel.trailingAnchor.constraint(equalTo: hintRow.trailingAnchor),
+                hintLabel.topAnchor.constraint(equalTo: hintRow.topAnchor),
+                hintLabel.bottomAnchor.constraint(equalTo: hintRow.bottomAnchor),
+            ])
+            row.addView(hintRow, in: .bottom)
+            hintRow.widthAnchor.constraint(equalTo: row.widthAnchor).isActive = true
+        }
         return row
     }
 
@@ -711,7 +807,9 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
         b.tag = tag.rawValue
         b.font = NSFont.systemFont(ofSize: 11)
         b.translatesAutoresizingMaskIntoConstraints = false
-        b.widthAnchor.constraint(equalToConstant: 186).isActive = true
+        // 不再固定 186：长标题可以按需要占宽，窄窗口下由压缩抵抗兜底
+        b.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        b.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
         checkboxes[tag.rawValue] = b
         addFullWidth(makeRow("", controls: [b], hint: hint))
     }
@@ -725,7 +823,7 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
         p.action = #selector(popupChanged(_:))
         p.font = NSFont.systemFont(ofSize: 11)
         p.translatesAutoresizingMaskIntoConstraints = false
-        p.widthAnchor.constraint(equalToConstant: 186).isActive = true
+        p.widthAnchor.constraint(equalToConstant: 210).isActive = true
         popups[tag.rawValue] = p
         addFullWidth(makeRow(title, controls: [p], hint: hint))
     }
@@ -788,6 +886,9 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
             sortKeys.firstIndex(of: p.defaultSortKey) ?? 0)
         popups[Tag.rawNameStyle.rawValue]?.selectItem(at: p.rawNameStyle.rawValue)
         popups[Tag.language.rawValue]?.selectItem(at: p.language.rawValue)
+        // 0（自动）→ 第 0 项；N（每行个数）→ 第 N-1 项
+        let tabs = p.detailTabsPerRow
+        popups[Tag.inspectorTabsPerRow.rawValue]?.selectItem(at: tabs == 0 ? 0 : tabs - 1)
 
         syncColorControls()
         syncSignalControls()
@@ -963,6 +1064,12 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
             // L10n.language 的 setter 已发 .languageDidChange（菜单重建 +
             // 各窗口就地刷新），这里只更新本窗口的静态文字
             relocalizeSelf()
+            // 语言项本身按枚举重建：既保证标题就是当前语言，也能清掉
+            // 旧版本（relocalize 误把 popup 当 button）累积出来的重复项
+            rebuildLanguagePopup()
+        case .inspectorTabsPerRow:
+            // 第 0 项是「自动」，其余项 i 对应每行个数 i+1（2…14）
+            p.detailTabsPerRow = i == 0 ? 0 : i + 1
         case .colorPreset:
             // 最后一项是「自定义」占位，点它不改任何颜色
             guard i >= 0, i < ColorPreset.allCases.count else {

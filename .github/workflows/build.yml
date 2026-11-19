@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: MIT
-# push 时自动编译、打包 DMG 并发布。
+# 编译、打包 DMG 并发布。日常 push 不再触发构建；只有打 tag 时才编译发布。
 #
-#   - 任意 push / PR：编译 + 生成 DMG + 上传为 Actions artifact（保留 14 天）
-#   - push 到 main：额外更新名为 nightly 的滚动预发布（asset 固定名，--clobber 替换）
-#   - push tag v*：创建该 tag 的正式 Release，附上带版本号的 DMG
-#   - workflow_dispatch：等同手动触发一次 main 构建
+#   - push tag v*：编译 + 生成带版本号的 DMG + 创建该 tag 的正式 Release
+#   - PR：编译验证 + 生成 DMG + 上传为 Actions artifact（保留 14 天），不发布
+#   - workflow_dispatch：手动触发一次构建；非 tag 触发时版本号记为 nightly，
+#     发布到名为 nightly 的滚动预发布（asset 固定名，--clobber 替换）
 #
 # runner / SDK：macos-26 + Xcode 26.5，与本地开发机（macOS 26.4 / 26.5 SDK）一致。
 # 不用 macos-15：它默认 Xcode 16.4 / macOS 15 SDK，比本地老两代，CI 验证的产物
@@ -17,7 +17,6 @@ name: Build & DMG
 
 on:
   push:
-    branches: ['**']
     tags: ['v*']
   pull_request:
   workflow_dispatch:
@@ -25,7 +24,7 @@ on:
 permissions:
   contents: write
 
-# 同一 ref 的连续 push 只保留最新一次，避免两个任务同时改写 nightly release。
+# 同一 ref 的连续触发只保留最新一次，避免两个任务同时改写 nightly release。
 concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
@@ -114,8 +113,8 @@ jobs:
   release:
     name: Publish DMG
     needs: build
-    # PR 与 fork 只读 token 不发布；main / v* tag / 手动触发才写 Release。
-    if: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) || github.event_name == 'workflow_dispatch' }}
+    # PR 与 fork 只读 token 不发布；v* tag / 手动触发才写 Release。
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || github.event_name == 'workflow_dispatch' }}
     # 只做 gh API 调用与资产上传，不需要 macOS 工具链，用 Linux runner 更省 CI 时长。
     runs-on: ubuntu-latest
     env:
@@ -156,7 +155,7 @@ jobs:
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
             printf '\nRelease tag: %s\n' "$GITHUB_REF_NAME" >> "$NOTES"
           else
-            printf '\nRolling build: rebuilt on every push to the default branch.\n' >> "$NOTES"
+            printf '\nRolling build: manually dispatched (workflow_dispatch).\n' >> "$NOTES"
           fi
 
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then

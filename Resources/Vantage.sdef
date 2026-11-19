@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE dictionary SYSTEM "file://localhost/System/Library/DTDs/sdef.dtd">
+
+<!--
+  Vantage 的 AppleScript 术语表。
+
+  编译进 .app/Contents/Resources/ 并由 Info.plist 的 OSAScriptingDefinition 指向
+  （同时需要 NSAppleScriptEnabled=true）。命令实现类在
+  Sources/Vantage/AppleScriptCommands.swift，通过 <cocoa class="…"/> 绑定。
+
+  两条硬性约束（写错只会得到 -2705「corrupted dictionary」，不给任何细节）：
+    1. 元素顺序由 sdef.dtd 规定：cocoa → direct-parameter → parameter* → result；
+    2. code 长度：suite / class / property / parameter 用 4 字符，
+       command 用 8 字符（前 4 位 = 所属 suite 的 code）。parameter 给 8 位
+       同样会被判成字典损坏。
+
+  示例：
+    tell application "Vantage" to list processes
+    tell application "Vantage" to process info 1234
+    tell application "Vantage" to quit process 1234
+    tell application "Vantage" to list interfaces
+    tell application "Vantage" to list routes
+-->
+<dictionary title="Vantage Terminology">
+    <suite name="Vantage Suite" code="Vntg" description="Process and network introspection.">
+
+        <command name="list processes" code="VntgLstP"
+                 description="List processes, one line per process: PID, PPID, user, state, RSS bytes, threads, name.">
+            <cocoa class="ListProcessesCommand"/>
+            <result type="list of text" description="One line per process."/>
+        </command>
+
+        <command name="process info" code="VntgInfP"
+                 description="Detailed information for one process, as an AppleScript record.">
+            <cocoa class="ProcessInfoCommand"/>
+            <direct-parameter type="integer" description="Process id (PID)."/>
+            <result type="list of text" description="Key/value lines."/>
+        </command>
+
+        <command name="quit process" code="VntgQitP"
+                 description="Send a signal to a process (default TERM).">
+            <cocoa class="QuitProcessCommand"/>
+            <direct-parameter type="integer" description="Process id (PID)."/>
+            <parameter name="signal" code="sigl" type="text" optional="yes"
+                       description="Signal name such as TERM, KILL, HUP (default TERM)."/>
+            <result type="text" description="Result message."/>
+        </command>
+
+        <command name="list interfaces" code="VntgLstI"
+                 description="List network interfaces with flags, MTU, MAC and addresses.">
+            <cocoa class="ListInterfacesCommand"/>
+            <result type="list of text" description="One line per interface or address."/>
+        </command>
+
+        <command name="list routes" code="VntgLstR"
+                 description="List the routing table: family, destination, gateway, flags, interface.">
+            <cocoa class="ListRoutesCommand"/>
+            <result type="list of text" description="One line per route."/>
+        </command>
+
+    </suite>
+</dictionary>

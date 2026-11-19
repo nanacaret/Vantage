@@ -38,13 +38,19 @@ Vantage 两者都不需要，且只是一个**可本地构建的单个 `.app`**�
 | 模块 | 内容 |
 |---|---|
 | 进程列表 | 树形 / 扁平、14 列三态排序、0.5–5 秒刷新、过滤、正则搜索、本地化名 + 原始可执行名、可选显示与 bin 不同的 argv[0] 调用名、已退出进程高亮 |
-| 检查器 | 13 个页签：概览、文件、环境、镜像、网络、监控、Pipe 对端、内存映射、TTY、窗口、签名、Mach、命令 |
+| 检查器 | 14 个页签：概览、文件、环境、镜像、网络、监控、Pipe 对端、内存映射、TTY、线程、窗口、签名、Mach、命令；每页可独立过滤（过滤框默认收起，⌘F 唤出并聚焦），路径格右键「在 Finder 中显示」/「复制路径」 |
 | 信号 | 右键菜单 / 主菜单，31 个 Darwin 信号可配置显示（默认 12 个）、确认策略、暂停继续、`sample` 采样 |
 | 性能监控（⌘P） | CPU/GPU/ANE/DRAM 功耗、整机功率（SMC `PSTR`）、CPU/GPU 温度、P-state residency 分簇频率、磁盘与网络吞吐、逐通道诊断 |
 | 全局搜索（⌘⇧F） | 先冻结进程快照，再对所有进程逐页取样；结果可跳回对应页签与行 |
 | 设备树（⌘⌥B） | IORegistry 7 个 plane、驱动 Bundle、client PID、完整属性表 |
 | 系统扩展（⌘⌥E） | `.kext` / `.dext` / `.systemextension` / `.appex` 清单、加载状态、`IOKitPersonalities`、Team ID |
 | 窗口工具 | 准星定位进程（⌘⌥L）、全局窗口列表、双击激活具体窗口、双击 PID 跨进程/跨页跳转 |
+| 网络（⌘⌥N） | 系统网卡（ifconfig 口径：状态 / 标志 / MTU / MAC / IPv4 / IPv6）+ 每张网卡的地址表、系统路由表（route / netstat 口径）；可 up/down、改 MTU、增删 IPv4/IPv6 地址、增删路由与默认路由 |
+| 提权 | 工具栏「提权」以 root 重启（Authorization Services，系统授权对话框，不用 sudo）；权限不足时顶部内联提示 + 一键提权，不弹窗 |
+| MCP 服务 | 独立可执行 `vantage-mcp`（stdio JSON-RPC）：列进程、读详情页、发信号、网卡与路由、系统总览，Claude Desktop / Cursor 可直接接入，不要求 GUI 在跑 |
+| AppleScript | `Resources/Vantage.sdef`：`list processes`、`process info`、`quit process`、`list interfaces`、`list routes` |
+| 已退出进程 | 宽限期内双击/右键仍可打开检查器：概览与命令页回放退出前快照，惰性页只回放「退出前采过的」数据 |
+| 线程页 | 逐个线程列出 TID / 名称 / 状态 / CPU / 用户态与内核态时间 / 优先级与调度策略（PROC_PIDLISTTHREADS + PROC_PIDTHREADINFO），切换到该页才采集 |
 | 定制 | ⌘, 偏好：采集上限、缓存 TTL、刷新间隔、默认视图、信号、11 项配色 + 5 组预设；深色模式、中英切换、⌘C 复制行、⌘/⌥+单击 |
 
 完整功能矩阵与数据来源见 [实现笔记](docs/IMPLEMENTATION.md)。

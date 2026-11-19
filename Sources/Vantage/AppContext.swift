@@ -116,6 +116,13 @@ final class AppContext {
         inspectors.first { $0.pid == pid }
     }
 
+    /// 按窗口反查检查器：⌘F 这类「作用于当前窗口」的动作需要先知道焦点在哪。
+    /// 主窗口 / 性能 / 扩展等窗口返回 nil，调用方据此回落到主窗口的行为。
+    func inspector(forWindow window: NSWindow?) -> InspectorWindowController? {
+        guard let window = window else { return nil }
+        return inspectors.first { $0.window === window }
+    }
+
     /// 把「创建 + 激活检查器」挪出通知派发栈，下一个 main queue 圈再执行
     private func showInspectorDeferred(_ pid: Int32) {
         DispatchQueue.main.async { [weak self] in
@@ -190,10 +197,27 @@ final class AppContext {
 
         let rc = ProcBridge.signal(pid, def.number)
         if rc != 0 {
-            showError(L("app.couldNotSendToPid", def.name, pid, String(cString: strerror(errno))))
+            let err = errno
+            if Privilege.isPermissionError(err) {
+                // EPERM / EACCES：根因是权限，不是操作错误。
+                // 不弹窗，主窗口顶部给一条内联提示 + 一键提权。
+                notifyPermissionIssue(
+                    L("app.couldNotSendToPid", def.name, pid,
+                      String(cString: strerror(err))))
+            } else {
+                showError(L("app.couldNotSendToPid", def.name, pid,
+                            String(cString: strerror(err))))
+            }
         } else {
             store.refresh()
         }
+    }
+
+    /// 权限不足导致的失败：不弹窗，交给主窗口顶部的内联提示条。
+    /// 已经是 root 还失败时提示「SIP 限制」，不再诱导用户重复提权。
+    func notifyPermissionIssue(_ reason: String) {
+        let canEscalate = !Privilege.isRoot
+        mainWindow?.showPermissionHint(reason, canEscalate: canEscalate)
     }
 
     func terminate(force: Bool) {

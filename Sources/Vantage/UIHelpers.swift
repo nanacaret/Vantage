@@ -59,6 +59,24 @@ enum UI {
         return tf
     }
 
+    /// 自动换行的只读标签。
+    ///
+    /// `NSTextField(labelWithString:)` 默认单行 + 截尾：只把 lineBreakMode
+    /// 改成 byWordWrapping 还不够 —— 没有 `preferredMaxLayoutWidth` 时，
+    /// intrinsicContentSize 仍按整行文本算宽度，放进 NSStackView 会把
+    /// 父视图撑到文本宽度（偏好设置窗口因此出现横向滚动，左侧内容被裁掉）。
+    /// 这里在每次布局后用实际宽度回填 preferredMaxLayoutWidth，
+    /// 让 intrinsic 高度按换行后的行数计算。
+    static func wrappingLabel(_ text: String,
+                              size: CGFloat = 11,
+                              weight: NSFont.Weight = .regular,
+                              color: NSColor = .labelColor,
+                              alignment: NSTextAlignment = .left,
+                              monospaced: Bool = false) -> WrappingLabel {
+        WrappingLabel(text, size: size, weight: weight, color: color,
+                      alignment: alignment, monospaced: monospaced)
+    }
+
     static func button(_ title: String, target: Any?, action: Selector) -> NSButton {
         let b = NSButton(title: title, target: target, action: action)
         b.bezelStyle = .rounded
@@ -78,5 +96,49 @@ enum UI {
             sub.topAnchor.constraint(equalTo: parent.topAnchor, constant: top),
             sub.bottomAnchor.constraint(equalTo: parent.bottomAnchor, constant: -bottom),
         ])
+    }
+}
+
+/// 见 `UI.wrappingLabel(_:...)`：宽度变化时回填 preferredMaxLayoutWidth，
+/// 让 NSTextField 真正按可用宽度换行并给出正确的 intrinsic 高度。
+final class WrappingLabel: NSTextField {
+    private var lastLayoutWidth: CGFloat = 0
+
+    init() {
+        super.init(frame: .zero)
+        isEditable = false
+        isSelectable = false
+        isBezeled = false
+        drawsBackground = false
+        lineBreakMode = .byWordWrapping
+        usesSingleLineMode = false
+        maximumNumberOfLines = 0
+        cell?.wraps = true
+        cell?.isScrollable = false
+    }
+
+    convenience init(_ text: String,
+                     size: CGFloat = 11,
+                     weight: NSFont.Weight = .regular,
+                     color: NSColor = .labelColor,
+                     alignment: NSTextAlignment = .left,
+                     monospaced: Bool = false) {
+        self.init()
+        stringValue = text
+        font = monospaced
+            ? NSFont.monospacedSystemFont(ofSize: size, weight: weight)
+            : NSFont.systemFont(ofSize: size, weight: weight)
+        textColor = color
+        self.alignment = alignment
+    }
+
+    required init?(coder: NSCoder) { return nil }
+
+    override func layout() {
+        super.layout()
+        let w = bounds.width
+        guard w > 1, abs(w - lastLayoutWidth) > 0.5 else { return }
+        lastLayoutWidth = w
+        preferredMaxLayoutWidth = w
     }
 }

@@ -42,13 +42,19 @@ you can build locally — or download as a DMG from Releases**:
 | Area | What you get |
 |---|---|
 | Process list | Tree / flat view, 14 sortable columns with a three-state header cycle, live refresh (0.5–5 s), filters, regex search, localized names plus raw executable names, optional argv[0] annotation when it differs from the binary, highlighted exited processes |
-| Inspector | 13 tabs — Overview, Files, Environment, Images, Network, Monitoring, Pipe peers, VM Regions, TTY, Windows, Signature, Mach, Command — each independently filterable |
+| Inspector | 14 tabs — Overview, Files, Environment, Images, Network, Monitoring, Pipe peers, VM Regions, TTY, Threads, Windows, Signature, Mach, Command — each independently filterable (the filter field is collapsed by default; ⌘F reveals and focuses it); right-click any path cell for Reveal in Finder / Copy Path |
 | Signals | Right-click menu and main menu with 31 Darwin signals, configurable visibility (12 shown by default), confirmation policies, pause/resume, `sample` |
 | Performance (⌘P) | CPU/GPU/ANE/DRAM power, whole-machine power (SMC `PSTR`), CPU/GPU temperature, per-cluster frequency from P-state residency, CPU/GPU activity, disk and network throughput, thermal pressure — all with a per-channel diagnostic readout |
 | Global search (⌘⇧F) | Takes a frozen process snapshot, then samples every process across all tabs; results link back to the exact tab and row |
 | Device tree (⌘⌥B) | IORegistry browser across 7 planes with driver bundle lookup, `IOUserClientCreator` client PIDs and full property tables |
 | Extensions (⌘⌥E) | `.kext` / `.dext` / `.systemextension` / `.appex` inventory, load state, `IOKitPersonalities` and Team ID |
 | Window tools | Crosshair window → process lookup (⌘⌥L), global window list, double-click a window to activate it (Accessibility), PID double-click jumps between processes and tabs |
+| Network (⌘⌥N) | Interfaces in ifconfig terms (state / flags / MTU / MAC / IPv4 / IPv6) with a per-interface address table, plus the routing table (route / netstat terms); bring links up or down, set MTU, add or delete IPv4/IPv6 addresses and routes (including default) |
+| Elevation | A Run as Root button relaunches the app as root through Authorization Services (the system password dialog — no sudo); permission failures show an inline bar with a one-click elevate action instead of a modal alert |
+| MCP server | Standalone `vantage-mcp` executable (stdio JSON-RPC): list processes, dump inspector pages, send signals, read interfaces/routes and system stats — works without the GUI running |
+| AppleScript | `Resources/Vantage.sdef`: `list processes`, `process info`, `quit process`, `list interfaces`, `list routes` |
+| Exited processes | Still open the inspector during the grace window: overview/command replay the last snapshot, lazy tabs replay only what had been collected before exit |
+| Threads tab | One row per thread — TID, name, run state, CPU, user/system time, priority and scheduling policy (PROC_PIDLISTTHREADS + PROC_PIDTHREADINFO); collected only when the tab is opened |
 | Customization | Preferences (⌘,) for collection limits, cache TTLs, refresh intervals, default view, signals, 11 colors and 5 presets; dark mode, i18n, ⌘C row copy, ⌘/⌥-click equivalents |
 
 See [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md) for the full feature matrix and

@@ -137,6 +137,7 @@ int  cproc_mach_security(int32_t pid, cproc_lines_t *out);
 int  cproc_regions      (int32_t pid, cproc_lines_t *out);  /* 内存映射 region 枚举 */
 int  cproc_pipe_peers   (int32_t pid, cproc_lines_t *out);  /* pipe 对端进程解析 */
 int  cproc_tty          (int32_t pid, cproc_lines_t *out);  /* 控制终端 / 会话 / 作业控制 */
+int  cproc_threads      (int32_t pid, cproc_lines_t *out);  /* 线程清单（LISTTHREADS + THREADINFO） */
 int  cproc_task_port    (int32_t pid, uint32_t *out_port);
 int  cproc_signal       (int32_t pid, int32_t sig);
 void cproc_lines_free   (cproc_lines_t *lines);
@@ -193,6 +194,36 @@ int  cproc_ioreg_tree(const char *plane, cproc_lines_t *out);
 int  cproc_ioreg_properties(const char *path, cproc_lines_t *out);
 /* 单次枚举节点上限（默认 30000），由偏好设置下发 */
 void cproc_ioreg_set_max_nodes(uint32_t n);
+
+/* ---------- 系统网络信息（net_info.c） ----------
+ * 读取全部走公开接口，不需要 root：getifaddrs / ioctl(SIOCGIFMTU) /
+ * sysctl(NET_RT_DUMP)。输出同样是 '\t' 分隔的 ASCII 数据行，文案在 Swift 侧。
+ *
+ *   cproc_net_ifaces : index, name, flags(hex), mtu, mac, type
+ *   cproc_net_addrs  : ifname, family(inet|inet6|link), addr, prefix, netmask, peer, scope
+ *   cproc_net_routes : family, dest(CIDR), gateway, flags, netif, expire
+ *
+ * 返回 0 成功，负 errno 失败。 */
+int  cproc_net_ifaces(cproc_lines_t *out);
+int  cproc_net_addrs(cproc_lines_t *out);
+int  cproc_net_routes(cproc_lines_t *out);
+
+/* ---------- 提权执行（auth_exec.c） ----------
+ * 用 Security.framework 的 Authorization Services 弹系统授权框，然后以 root
+ * 执行固定路径的系统工具。Swift 侧调不到 AuthorizationExecuteWithPrivileges
+ * （新版 SDK 里它对 Swift 标了 unavailable），所以这里包一层 C。
+ *
+ *   cproc_auth_create(&ref)          创建 AuthorizationRef（+1，需 cproc_auth_free）
+ *   cproc_auth_request_exec(ref)     申请 system.privilege.admin，**会弹授权框**
+ *   cproc_auth_exec(ref, tool, argv, &out)
+ *                                    以 root 执行 tool（argv 以 NULL 结尾），
+ *                                    stdout 读进 malloc 的 *out（调用方 free）
+ * 返回 0 成功；其余为 OSStatus / 负数错误码。 */
+int  cproc_auth_create(void **out_ref);
+void cproc_auth_free(void *ref);
+int  cproc_auth_request_exec(void *ref);
+int  cproc_auth_exec(void *ref, const char *tool,
+                     const char *const argv[], char **out);
 
 /* SwiftPM 生成的 module map 可能用 umbrella 目录，也可能只用单个头；
  * 这里显式引入，保证两种情况下 CPerf.h 的声明都会被导出到 Swift。

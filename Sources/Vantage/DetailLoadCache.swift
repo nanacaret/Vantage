@@ -3,7 +3,7 @@ import Foundation
 
 /// 详情采集结果缓存。
 ///
-/// 之前每次选中进程都会把 13 个页签的数据全部采一遍，其中「镜像」和「映射」
+/// 之前每次选中进程都会把 14 个页签的数据全部采一遍，其中「镜像」和「映射」
 /// 各自做一次完整的 vm_map region 枚举，「Pipe」「监控」各自触发一次全系统
 /// pipe FD 扫描，签名校验还要读整个可执行文件。来回点选同一个重 app 时，
 /// 这些成本会反复付。缓存按 `(pid, 页)` 存结果，动态页短 TTL、静态页长 TTL。
@@ -28,13 +28,13 @@ final class DetailLoadCache {
     private let lock = NSLock()
     private var store: [Key: Entry] = [:]
 
-    /// FD / socket / pipe 会随进程运行变化；环境 / 镜像 / 映射 / 签名几乎静态。
+    /// FD / socket / pipe / 线程会随进程运行变化；环境 / 镜像 / 映射 / 签名几乎静态。
     /// 三档时长都来自偏好设置，改动后下一次 get 立即生效。
     private func ttl(_ key: String) -> TimeInterval {
         let p = Preferences.shared
         switch key {
         // windows 会随用户开/关窗口变化，归动态档；不能按静态页缓存 60 秒
-        case "files", "sockets", "monitoring", "pipePeers", "windows":
+        case "files", "sockets", "monitoring", "pipePeers", "windows", "threads":
             return Double(p.dynamicTTL)
         case "tty":
             return Double(p.ttyTTL)
@@ -49,6 +49,14 @@ final class DetailLoadCache {
         guard !force, let e = store[k],
               Date().timeIntervalSince1970 - e.at < ttl(key) else { return nil }
         return e.payload
+    }
+
+    /// 忽略 TTL 的读取：进程退出后要回放「退出前采过的页」，
+    /// 这时候数据再旧也是有价值的，不能按过期丢掉。
+    func peek(_ key: String, pid: Int32) -> Payload? {
+        let k = Key(pid: pid, key: key)
+        lock.lock(); defer { lock.unlock() }
+        return store[k]?.payload
     }
 
     func put(_ payload: Payload, key: String, pid: Int32) {

@@ -1,13 +1,21 @@
 // SPDX-License-Identifier: MIT
 import AppKit
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+
+    /// 「编辑」菜单与它的 ⌘F 项：检查器窗口里 ⌘F 是「过滤框显隐」，
+    /// 标题随当前窗口切换，见 menuNeedsUpdate。
+    private var editMenu: NSMenu?
+    private weak var focusSearchItem: NSMenuItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+
         // 必须在任何窗口/视图 loadView 之前：默认列宽方案变更时清掉旧的
         // 持久化宽度一次，否则用户永远看不到新的默认值。
         ColumnWidthDefaults.migrateIfNeeded()
         buildMainMenu()
+        // AppleScript：sdef 只负责术语；事件分发用 NSAppleEventManager 直连
+        ScriptHandlers.install()
         NotificationCenter.default.addObserver(
             self, selector: #selector(languageChanged),
             name: .languageDidChange, object: nil)
@@ -69,8 +77,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 编辑：补齐 AppKit 标准编辑项。手写 NSApplication（无故事板）时
         // 系统不会自动创建这些菜单项，缺了「复制 ⌘C」= 键盘快捷键完全无效，
         // 只剩 NSTextView 右键菜单里自带的「复制」可用。
-        main.addItem(menu(L("menu.edit"), [
-            item(L("menu.focusSearch"), #selector(focusSearchAction), "f"),
+        let focusSearch = item(L("menu.focusSearch"), #selector(focusSearchAction), "f")
+        let editItem = menu(L("menu.edit"), [
+            focusSearch,
             item(L("menu.globalSearch"), #selector(globalSearchAction), "f",
                  [.command, .shift]),
             sep(),
@@ -87,7 +96,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             sep(),
             item(L("menu.copyPid"), #selector(copyPIDAction), ""),
             item(L("menu.copyFullCommandLine"), #selector(copyCmdAction), ""),
-        ]))
+        ])
+        // 只用来在弹出前改 ⌘F 项的标题，不动其它项的启用状态
+        editItem.submenu?.delegate = self
+        editMenu = editItem.submenu
+        focusSearchItem = focusSearch
+        main.addItem(editItem)
 
         // 视图
         let intervalMenu = NSMenu()
@@ -139,6 +153,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             item(L("menu.performanceMonitor2"), #selector(performanceAction), ""),
             item(L("menu.windowList2"), #selector(windowListAction), ""),
             item(L("menu.globalSearch2"), #selector(globalSearchAction), ""),
+            item(L("menu.network"), #selector(networkAction), "n",
+                 [.command, .option]),
             item(L("menu.deviceBrowser2"), #selector(deviceBrowserAction), "b",
                  [.command, .option]),
             item(L("menu.extensionsBrowser2"), #selector(extensionsBrowserAction),
@@ -227,6 +243,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         WindowListWindowController.shared.showWindow(nil)
     }
 
+    @objc private func networkAction(_ sender: Any?) {
+        NetworkWindowController.shared.showWindow(nil)
+    }
+
     /// SystemInformer 风格：直接进入准星选取，隐藏本 App 的窗口以免遮挡
     @objc private func locateByWindowAction(_ sender: Any?) {
         var hide: [NSWindow] = []
@@ -261,8 +281,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppContext.shared.sampleProcess()
     }
 
+    /// ⌘F：检查器窗口里是「本页过滤框的显隐」（默认收起，唤出时自动聚焦）；
+    /// 其余窗口仍是「聚焦主表搜索框」。
     @objc private func focusSearchAction(_ sender: Any?) {
+        if let inspector = AppContext.shared.inspector(forWindow: NSApp.keyWindow) {
+            inspector.toggleFilter()
+            return
+        }
         AppContext.shared.mainWindow?.focusSearch()
+    }
+
+    /// 弹出「编辑」菜单前把 ⌘F 的标题换成当前窗口里它真正的含义，
+    /// 只看标题会误以为检查器里按 ⌘F 是去搜进程。
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu === editMenu, let item = focusSearchItem else { return }
+        let inInspector = AppContext.shared.inspector(forWindow: NSApp.keyWindow) != nil
+        let title = inInspector ? L("menu.filterCurrentTab") : L("menu.focusSearch")
+        if item.title != title { item.title = title }
     }
 
     /// ⌘⇧F：独立全局搜索窗口。打开时拍进程快照并对所有 PID 取样，

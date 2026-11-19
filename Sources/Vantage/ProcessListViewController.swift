@@ -725,14 +725,15 @@ final class ProcessListViewController: NSViewController,
         }
 
         let header = NSMenuItem(title: pid > 0
-                                ? "\(name) · PID \(pid)\(exited ? "（已退出）" : "")"
+                                ? "\(name) · PID \(pid)\(exited ? L("list.exitedSuffix") : "")"
                                 : L("list.noProcessSelected"),
                                 action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)
         menu.addItem(.separator())
 
-        add(L("list.openInspector"), #selector(menuInspector), enabled: hasTarget)
+        // 已退出的进程也能打开检查器：只看退出前那一帧的快照
+        add(L("list.openInspector"), #selector(menuInspector), enabled: pid > 0)
         add(L("list.locateThisProcessByWindow"), #selector(menuLocateInMain),
             enabled: hasTarget)
 

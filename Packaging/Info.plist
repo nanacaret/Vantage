@@ -15,6 +15,10 @@
     <string>io.github.nanacaret.Vantage</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
+    <key>NSAppleScriptEnabled</key>
+    <true/>
+    <key>OSAScriptingDefinition</key>
+    <string>Vantage.sdef</string>
     <key>CFBundleName</key>
     <string>Vantage</string>
     <key>CFBundlePackageType</key>

@@ -82,7 +82,9 @@ iconutil -c icns Assets/Vantage.iconset -o Vantage.app/Contents/Resources/Vantag
 12. **Mach** — `proc_bsdinfo` 标志位、`csops(CS_OPS_STATUS)` 的 CS flags、`task_name_for_pid` + `task_info(TASK_AUDIT_TOKEN)` 的审计令牌、SIP 说明
 13. **命令** — 完整 argv 与可执行路径，可复制
 
-每个 Tab 都有独立过滤框；双击进程行可打开**独立检查器窗口**（Activity Monitor 风格）。
+每个 Tab 都有独立过滤框（**检查器里默认收起，⌘F 唤出并聚焦**，主窗口详情区常显）；
+路径格右键可「在 Finder 中显示 / 复制路径」，详见「详情表右键菜单」章节。
+双击进程行可打开**独立检查器窗口**（Activity Monitor 风格）。
 页签统一压到 2 个字，13 个在 1140pt 检查器 / 880pt 主窗口详情区里能完整显示。
 
 **详情是惰性加载的**：选中进程时只更新「概览 / 命令」（纯快照、零系统调用），
@@ -971,7 +973,7 @@ Sources/Vantage/
 | 排序与行为 | 点击表头自动切扁平列表 | 开 | 关则保留树内排序（旧行为） |
 | | 同一列三击恢复树形 | 开 | 关则退化为「升序 / 降序」二态循环 |
 | | 表头显示升降序三角 | 开 | 自绘图片 |
-| | 详情页按页惰性加载 | 开 | 关则回到「一次选中采全部 13 页」，供对比 / 排错 |
+| | 详情页按页惰性加载 | 开 | 关则回到「一次选中采全部 14 页」，供对比 / 排错 |
 | | App 启动即开始性能采样 | 开 | 关则只在第一次打开性能窗口时启动 |
 | | ⌘R 同时清空详情缓存 | 开 | 关则 ⌘R 只刷新进程列表 |
 | | 发送前确认 / 危险信号始终确认 | 开 / 开 | 已移到「信号」页，见下文 |
@@ -1308,3 +1310,359 @@ delegate 完全交回 AppKit 原生实现。Apple 文档明确 `NSTabViewControl
 - **C 层配套**：`cproc_monitoring` 原来对 `PROX_FDTYPE_VNODE` 只计数不列行，导致「文件」页双击一个普通文件 FD 跳到「监控」页后找不到条目。现在补一行 `FD / VNODE / - / 普通文件 / 目录（完整路径见「文件」页）`，只给 FD 号与类型、不额外读路径，避免为几百个文件 FD 再做几百次 `proc_pidfdinfo`。`SOCKET` 仍不列（网络页已有），`PIPE` 两边都有。
 
 表格 tooltip 写明了映射规则；Pipe 页的「对端 PID」列仍保留蓝色链接，可继续双击跳到对端进程。
+## 详情表右键菜单：在 Finder 中显示
+
+详情表里有大量路径格：文件页「路径」、镜像页「镜像路径」、映射页「映射文件」、
+概览页「可执行文件路径 / Bundle」、签名页与 TTY 页的各种设备名。以前只能肉眼复制路径
+再去 Finder 里粘贴，现在任意一格右键都有：
+
+```
+/Applications/Vantage.app/Contents/MacOS/Vantage     ← 禁用项，只是让用户确认目标
+────────────────────────────────────
+Reveal in Finder
+Copy Path
+────────────────────────────────────
+Copy Row
+```
+
+认不出路径时只留「复制行」，前两项自动置灰，不会出现「点了没反应」。
+
+**路径从哪来**（`DetailTableViewController.resolvedPath(in:)`，顺序即优先级）：
+
+1. 右键**命中的那一格** —— 用户指哪打哪；
+2. 该行**「路径类」列**（列头含 `path` / `file` / `image` / `路径` / `镜像` / `映射` / `文件`）；
+3. 从右往左第一格认得出的路径 —— 各页都把路径放在最右列。
+
+**归一化**（`PathReveal.resolve`）要处理真实数据里的脏值，认不出来就返回 `nil`：
+
+| 输入 | 结果 |
+|---|---|
+| `/usr/bin/ls` | 原样 |
+| `"…app"` / `'…app'` | 去引号 |
+| `file:///Users/x/a.txt` | 转成 `/Users/x/a.txt` |
+| `/var/folders/x/a.txt (deleted)` | 去掉内核的 `(deleted)` / `(revoked)` / `(unlinked)` |
+| `~/Desktop/x` | 展开家目录 |
+| `/usr/bin:/bin`（PATH 这类列表） | `nil` —— 含冒号一律不认，否则会去「显示」一个不存在的巨型文件名 |
+| `—` / `-` / `?` / `(未知路径)` / `socket:[123]` / `com.apple.Safari` | `nil` |
+
+**点下去之后**（`PathReveal.reveal`）：路径存在就 `activateFileViewerSelecting` 选中它；
+**不存在时逐级向上找仍存在的祖先并选中**（进程退出后映射文件消失、卷被卸载都属正常），
+整条链都找不到才弹提示。这与 Finder 自己的行为一致，比「静默无反应」好。
+
+右键命中位置由 `ActionTableView.onContextMenu(row, column)` 回报，菜单项在
+`menuNeedsUpdate` 里按这一行重建 —— 不读 `selectedRow`，所以键盘呼出菜单、
+表格刚刷新过、右键的行不在当前多选集合里，都不会指到别的文件。
+
+同样的入口也加到了「命令」页的文本视图（`PathTextView`）：取当前选区；没有选区就取
+右键落点所在的那个词（按空白 / 引号 / 括号切分），认得出路径才在系统右键菜单顶部插入
+一项。系统菜单是共享实例，所以先 `copy()` 再插入，避免多次弹出后累积重复项。
+
+## 检查器的过滤框：默认收起，⌘F 唤出
+
+检查器窗口本来就矮，而每个页签顶部常驻一行过滤框。现在**默认收起**：
+
+- `DetailTabViewController.hidesFilterByDefault` 由 `InspectorWindowController` 打开 ——
+  检查器收起，主窗口详情区保持常显（主窗口里 ⌘F 是「聚焦进程搜索」，不能抢）。
+- 实现在 `DetailTableViewController`：`searchField.isHidden` + 两套 `scroll.top` 约束
+  二选一（有过滤框时接在它下面，收起时直接顶到 view 顶部）。只切表格的 top 约束，
+  过滤框自身的 leading/trailing/top 不动，`isHidden` 已经让它不参与绘制。
+- **⌘F 是窗口级分流**：`AppDelegate.focusSearchAction` 先用
+  `AppContext.inspector(forWindow: NSApp.keyWindow)` 看焦点在不在检查器，在就走
+  `toggleFilter()`（显示时 `makeFirstResponder` + 全选已有文字，直接输入即替换），
+  否则仍是聚焦主表搜索框。「编辑」菜单里这一项的标题也跟着窗口变
+  （`Focus Search` ↔ `Show / Hide Filter`），靠 `menuNeedsUpdate` 在弹出前改。
+- **收起不清过滤**：⌘F 唤回后文字与筛选结果都还在。但为了防止「行莫名变少又看不出原因」，
+  代码设置的非空过滤（全局搜索跳转、跨页定位兜底）会自动把过滤框显示出来。
+- 过滤框里按 **Esc** 清空过滤；检查器这种「默认收起」的场合顺带把框收起，一次 Esc 回到
+  「无过滤 + 满屏表格」。实现在 `control(_:textView:doCommandBy:)`，只认
+  `cancelOperation:`（用 `NSSelectorFromString` 构造，理由见 `ClipboardSupport.swift`）。
+- 「命令」页是整段文本、没有过滤框，⌘F 在该页无动作。
+
+## 提权：以 root 运行（Authorization Services，不用 sudo）
+
+主窗口工具栏最右边是「提权 / Run as Root」；权限不足时顶部会出现一条**内联**提示条
+（不是弹窗）：「Could not send SIGTERM to PID 1: Operation not permitted」+「立即提权」+ ✕。
+
+### 为什么不是 sudo / osascript
+
+| 方案 | 问题 |
+|---|---|
+| `sudo` | 要终端、要 sudoers，GUI 里根本不可用 |
+| `osascript -e 'do shell script … with administrator privileges'` | 借道 AppleScript，要「自动化」权限；子进程身份是 osascript，还得处理它自己的错误 |
+| **Authorization Services**（本项目） | 系统原生：`AuthorizationCreate` + 申请 `system.privilege.admin` → 弹出系统自己的「Vantage 想要进行更改」对话框（登录密码 / Touch ID），授权后以真实 uid=0 启动子进程。无额外权限、无第三方依赖 |
+
+### 实现分层
+
+- **C 层 `auth_exec.c`**：`cproc_auth_create` / `cproc_auth_request_exec` / `cproc_auth_exec`。
+  `AuthorizationExecuteWithPrivileges` 在 10.7 起 deprecated，新版 SDK 直接标成
+  **unavailable in Swift**（编译期报 "APIs deprecated as of macOS 10.9 and earlier are
+  unavailable in Swift"），只能从 C 调 —— 这也是为什么还要包一层。
+- **Swift 层 `Privilege`**：
+  - `isRoot`（`geteuid() == 0`）
+  - `authorize()`：复用同一个 `AuthorizationRef`，系统缓存凭据 5 分钟，
+    连续操作不再弹框；用户取消就丢掉 ref，下次重新申请
+  - `relaunchAsRoot()`：授权后 `exec` 自己（**不传参数**，子进程看 `geteuid()` 判断身份）。
+  - `otherInstanceRunning(exe:excluding:)`：进程表里是否已有同路径的 **uid=0** 实例，
+    用来判断「新实例到底起没起来」。
+  - `run(tool:args:)`：已是 root 直接 `Process` 执行；否则 `/bin/sh -c "… 2>&1"`
+    （这个 API 只接 stdout，错误文本要靠 shell 合并）以 root 执行。
+
+**重启流程的两个坑**（都踩过，也是本节存在的理由）：
+
+1. **`AuthorizationExecuteWithPrivileges` 会阻塞到子进程退出**。它返回的时机不是
+   「子进程已启动」，而是「子进程结束了」。第一版把它放在主线程调用，于是提权成功后
+   旧进程的**整个 UI 线程被冻住**（窗口点不动、列表不再刷新），要等用户退出 root
+   实例才解冻 —— 这正是那个「旧窗口卡死」bug。
+2. **不能等它返回再决定退出**。把它挪到后台线程后 UI 是活的，但「退出旧实例」的
+   逻辑挂在它的返回值上，而它在 root 实例整个生命周期里都不会返回 —— 结果就是旧窗口
+   一直留着、变成两个窗口。正确做法是：**点击那一刻就开始轮询**，与那次调用何时返回
+   完全无关；后台线程的返回值只用来区分「用户取消了授权」。
+
+现在的实现（`MainWindowController.escalateClicked`）：
+
+```
+点击 → 显示「正在以 root 重启…」
+     → 后台线程：authorize() + exec 自己        （可能几十分钟不返回，无所谓）
+     → 主线程立刻开始每 0.3s 轮询：
+          另一个 Vantage 窗口出现？（CGWindowList，便宜，每轮都查）
+          进程表里出现同路径的 uid=0 实例？（全量快照较贵，每 3 轮查一次）
+          → 命中即 exit(0)
+          launchResult == false（用户取消）→ 立刻提示「已取消提权」
+          10 秒仍没出现 → 提示「没等到新的 root 实例」并把界面恢复成可重试
+```
+
+两个信号取「或」的原因：提权后的进程属于 root，非 root 调用方读它的
+`proc_pidinfo(PROC_PIDTBSDINFO)` **会被拒**（实测），进程表里查不到；而窗口的
+owner PID 是 CG 层公开信息，一定看得到。只要新实例画出窗口，就说明它可用了。
+- 程序以 root 重启后，窗口、列表、性能采样都照常工作（已实测）；工具栏按钮变成
+  「已以 root 运行」并置灰，网络窗口右下角也会显示同样的状态。
+
+### 什么时候提示提权（不弹窗）
+
+`AppContext.notifyPermissionIssue(_:)` 只处理「根因是权限」的失败：`errno` 为
+`EPERM` / `EACCES`（典型是给别的用户的进程发信号、`sample` 受保护进程）。
+它把原因交给主窗口的 `showPermissionHint`，顶部展开一条橙色提示条：
+
+- 非 root → 显示「立即提权」（直接触发上面的授权 + 重启）；
+- 已是 root → 只显示原因、不给提权按钮 —— 那多半是 **SIP / entitlements** 限制，
+  再提权也没用（例如 SIP 保护的进程 `task_for_pid` 必然失败，与 root 无关）。
+
+其它错误（参数错、路径不存在等）仍走原来的 `showError` 弹窗，因为它们不需要提权。
+
+## 网络窗口（⌘⌥N）
+
+两个页签：**网卡** 与 **路由**，对应 `ifconfig`、`route` / `netstat -rn` 的信息与操作。
+
+### 读取（全部不需要 root）
+
+`Sources/CProc/net_info.c`，输出仍是 `'\t'` 分隔的纯 ASCII 行，文案在 Swift 侧：
+
+| 接口 | 列 | 数据来源 |
+|---|---|---|
+| `cproc_net_ifaces` | index, name, flags(hex), mtu, mac, type | `getifaddrs`（AF_LINK）+ `ioctl(SIOCGIFMTU)` |
+| `cproc_net_addrs` | ifname, family, addr, prefix, netmask, peer, scope | `getifaddrs`（AF_INET / AF_INET6） |
+| `cproc_net_routes` | family, dest(CIDR), gateway, flags, netif, expire | `sysctl(NET_RT_DUMP)`，AF_INET / AF_INET6 各 dump 一次 |
+
+两个实测才发现的坑：
+
+1. **`rtm_addrs` 是位掩码，不是个数**。按 `0..<rtm_addrs` 遍历会把 dest / gateway /
+   netmask 整体错位，表现为前缀长度乱飞（`10.0.0.0/0`、`8.8.8.8/2` 这种）。
+   必须按 `RTA_*` 位遍历、只对置位的推进指针。
+2. **路由消息里的 netmask 不是普通 AF_INET sockaddr**：内核按
+   `sa_len = 4 + n`（n = 有效字节数）、`sa_family = 0xff`，掩码字节从偏移 4 开始。
+   直接读 `sin_addr` 得到的是全 0，于是所有网络路由都变成 `/0`。
+3. IPv6 链路的网关要带 scope（`fe80::1%en0`），否则既看不懂也没法直接抄进 `route`。
+4. `AF_INET6` 在 Darwin 是 **30**，不是 Linux 的 10 —— 传错只会得到 EINVAL。
+
+### 修改（需要 root）
+
+统一走系统自带的 `/sbin/ifconfig` 与 `/sbin/route`，不自己拼 `RTM_ADD` 的路由消息
+（那套 sockaddr 编码正是上面第 2 条坑的来源，收益为零）：
+
+| 操作 | 实际命令 |
+|---|---|
+| 启用 / 停用 | `ifconfig en0 up` / `down` |
+| 改 MTU | `ifconfig en0 mtu 1400` |
+| 加 IPv4 | `ifconfig en0 inet 1.2.3.4 netmask 255.255.255.0 alias` |
+| 加 IPv6 | `ifconfig en0 inet6 2001:db8::1 prefixlen 64 alias` |
+| 删地址 | `ifconfig en0 -alias 1.2.3.4` / `ifconfig en0 inet6 … -alias` |
+| 加路由 | `route -n add default 192.168.1.1`、`… add -net 10.0.0.0/24 <gw>`、`… add -host 1.2.3.4 <gw>`、`… add -inet6 …`、网关写网卡名时 `… add default -interface utun8` |
+| 删路由 | 同上把 `add` 换成 `delete` |
+
+**参数校验**（`NetValidate`）：地址必须过 `inet_pton`、前缀 0…32 / 0…128、
+MTU 68…65535、网卡名必须在当前网卡列表里。校验通过后由 `Privilege.shellQuote`
+逐段加单引号再交给 `/bin/sh -c`，不接受任何未检查的输入。
+
+**删除路由必须优先带网关**：`route delete default` 会删掉内核匹配到的**第一条**默认路由 ——
+同时存在 VPN（utun8）和物理网卡两条默认路由时，删的往往不是用户选中的那条。
+（这是实测踩到的：删 en0 的默认路由，结果删掉了 utun8 那条。）现在先带网关删，
+只有网关不是 IP（ARP 项的 MAC、`link#N`）时才退回「只按目标删」。
+
+### 界面取舍
+
+- 结果**不弹窗**：底部状态栏一行显示成功 / 失败 + 命令输出（失败附原始 stderr，
+  可以直接照抄去终端复现）。输入仍用系统表单（`NSAlert` + accessoryView，
+  Destination / Gateway 两个字段，回车即提交）。
+- ⌘C 复制选中行；过滤框沿用主表的字面量 / 正则语义。
+
+## 已退出进程的检查器：回放退出前的快照
+
+宽限期内的已退出进程（`ProcessStore.exiting`）本来就保留着**退出那一帧的完整
+`ProcessSnapshot`**，但检查器之前查的是 `process(withPID:)`（只扫存活进程），
+于是双击退出进程只会看到「No Process Selected」。现在：
+
+- `ProcessStore.snapshotIncludingExited(for:)`：存活优先，否则返回宽限期快照
+  （顺带刷新 `exitRemaining`）。只给**展示**用；发信号 / 采样这类动作仍然走
+  `process(withPID:)`，不会对着已死的 PID 动手。
+- 右键菜单对退出进程也放开了「打开检查器」；窗口标题带「（已退出）」后缀；
+  概览页状态显示「已退出」而不是快照里定格的 RUNNING。
+- **惰性页不回放空数据**：`DetailTabViewController.reload` 在 `snap.isExited` 时
+  走 `applyFrozen` —— 只从 `DetailLoadCache.peek`（忽略 TTL）取**退出前采过的页**，
+  一页都没采过就写一行「进程已退出，退出前没有采集过这一页」，不再对死 PID 调
+  `cproc_*`（那些调用只会返回 ESRCH，让用户看到一屏「读取失败」）。
+- **宽限期结束后仍保持冻结**：检查器可能开得比宽限期（默认 3 次刷新）更久。
+  `reload` 记住最后一次见到的快照（`lastSnapshot`），记录消失后继续用它渲染。
+  注意清理顺序——`lastPID != pid` 时的 `lastSnapshot = nil` 必须放在**取快照之前**，
+  否则本帧刚取到的退出快照会被自己清掉，下一次 reload 就退回按活进程采集，
+  又是一屏 sysctl 报错（踩过）。
+- **采集失败的结果不入缓存**：`DetailLoadCache.put` 之前先判断 C 层首行是不是
+  「错误」，是就跳过。否则进程刚退出那一刻采到的报错会被缓存 60 秒，
+  反过来盖住「退出前没采过」的正确结论。
+
+## 减少实例创建：L() 与进程字符串
+
+**`L()` 从 2.5 µs 降到 0.1 µs（约 25×）**，本机 20 万次调用实测：
+
+| | 0 参数 | 3 参数 |
+|---|---|---|
+| 之前 | 506 ms / 200k 次 | 566 ms / 200k 次 |
+| 现在 | 20 ms / 200k 次 | 73 ms / 200k 次 |
+
+三个原因：
+
+1. `isEnglish` 里的 `.system` 分支每次都读 `Locale.preferredLanguages`
+   （分配一个数组 + 字符串）。现在按语言缓存，`notifyChanged()` 时才失效。
+2. 当前语言的表也缓存住，`string(key)` 只是一次字典查找。
+3. 格式化不再「每个占位符都复制一次整串」：按**解析后的格式串**缓存
+   模板（文本段 + 参数下标，`NSCache`），渲染时一次 `reserveCapacity` 构造完。
+   另外给 `L()` 加了 0–3 个参数的**定长重载**，避免 `Any...` 每次建 `[Any]`。
+
+**进程字符串驻留**：每次刷新要为每个进程取 6 个 C 字符串，600+ 进程 × 每秒
+= 每秒四千次 `String(cString:)`。`ProcBridge` 现在以 `(pid, startSec)` 为键缓存，
+用 `strcmp` 与上一帧比对，只有真变了才新建。只驻留 `cmdline / exepath / argv0`
+这三项——`comm / name / tty` 基本 ≤15 字节，Swift 的 small-string 优化本来就不分配
+堆内存，再驻留反而多出一次比较 + 字典开销（实测这条边界，别把短字符串也塞进去）。
+
+**状态名**：`stateName` 原来每渲染一格就 `String(cString: cproc_state_name(...))`，
+现在把 0–7 这 8 个状态名预先建表（内核只会返回 6 种）。
+
+> 说明：`collect()` 整体耗时仍在 7 ms 上下，其中绝大部分是 sysctl / libproc 的
+> 系统调用，字符串分配只占很小一块 —— 这轮优化的收益体现在**分配次数**（每秒少
+> 约两千次 malloc/free）与 `L()` 的调用开销上，而不是 collect 的墙钟时间。
+
+## MCP 服务（vantage-mcp）
+
+独立可执行 target（`Sources/VantageMCP`），stdio + 换行分隔的 JSON-RPC 2.0，
+只实现 `tools` 能力。**不依赖 GUI 是否在跑**，直接调 CProc：
+
+| 工具 | 参数 | 说明 |
+|---|---|---|
+| `list_processes` | filter?, limit?, sort? | pid/ppid/user/state/RSS/线程/命令行（命令行截断 120 字符）|
+| `process_info` | pid | 单进程的键值详情 |
+| `process_detail` | pid, kind | files/env/images/sockets/monitoring/regions/pipes/tty/mach（最多 400 行）|
+| `send_signal` | pid, signal | 名称或数字，错误原文回传 |
+| `network_interfaces` | - | 网卡 + 地址 |
+| `network_routes` | family? | 路由表 |
+| `system_stats` | - | CPU / 内存 / swap / load / 进程与线程数 |
+
+接入 Claude Desktop / Cursor 时把 command 指向 `vantage-mcp`（或
+`build/Vantage.app/Contents/MacOS/vantage-mcp`，见打包脚本）即可。stdout 只输出
+协议消息，日志一律走 stderr。
+
+## AppleScript 接口
+
+三件套缺一不可，且都有坑：
+
+1. `Resources/Vantage.sdef` —— 术语表；
+2. `Info.plist` —— `NSAppleScriptEnabled=true` + `OSAScriptingDefinition=Vantage.sdef`；
+3. `Sources/Vantage/AppleScriptCommands.swift` —— `NSScriptCommand` 子类，
+   sdef 里用 `<cocoa class="ListProcessesCommand"/>` 绑定，类上加
+   `@objc(ListProcessesCommand)` 固定 ObjC 类名（否则 Swift 会带模块前缀）。
+
+sdef 的两条硬约束（违反只有一句 `-2705 corrupted dictionary`，没有任何细节）：
+
+- **元素顺序**：`cocoa` 必须是 `<command>` 的第一个子元素，然后
+  `direct-parameter` → `parameter*` → `result`；
+- **code 长度**：`suite` / `class` / `property` / `parameter` 是 **4** 字符，
+  `command` 是 **8** 字符（前 4 位等于 suite 的 code）。给 parameter 写 8 字符
+  同样会被判损坏。
+
+命令：`list processes`、`process info <pid>`、`quit process <pid> [with signal]`、
+`list interfaces`、`list routes`。数据取 GUI 已采好的快照，不额外跑一遍 sysctl。
+
+> 首次从终端 / 脚本调用时，macOS 会弹「… wants to access Vantage」的自动化授权，
+> 拒绝的表现是 `-10004 privilege violation`（与被控方实现无关）。
+
+## 线程页（检查器第 10 个页签）
+
+一行一个线程：`TID | 线程名 | 状态 | CPU | CPU 时间（用户 / 内核）| 优先级 / 策略`。
+和别的页一样按页惰性采集 —— 只有切到该页才调 `cproc_threads`。
+
+### 用到的两个 flavor
+
+| 调用 | 作用 |
+|---|---|
+| `proc_pidinfo(pid, PROC_PIDLISTTHREADS, 0, buf, size)` | 线程 id 数组，**每条 8 字节**（64 位 thread id）|
+| `proc_pidinfo(pid, PROC_PIDTHREADINFO, tid, &ti, sizeof(ti))` | 单个线程的 `struct proc_threadinfo` |
+
+`PROC_PIDLISTTHREADIDS` 这个名字在公开 SDK 里**不存在**（`sys/proc_info.h` 只有
+`PROC_PIDLISTTHREADS`）。实测那个数字 flavor 在当前系统上返回的既不是线程数、
+也不是合法 thread id（拿返回值去查 `PROC_PIDTHREADINFO` 一律失败），所以不要
+按某些资料改回去 —— 现在的两个常量是能对照 `ps -M` 验证的。
+
+三个容易踩的细节：
+
+1. **时间单位是纳秒**（`pth_user_time` / `pth_system_time`），不是 mach absolute
+   time；按微秒除会得到「忙线程 1 秒烧了 966 秒 CPU」这种离谱数字。
+2. **`pth_cpu_usage` 放大了 10 倍**：952 = 95.2%，除以 10 才是百分比。
+3. 线程名来自 `pthread_setname_np`，绝大多数系统线程没有名字。显示「（未命名）」
+   而不是留空 —— 空列会被误读成「读取失败」。
+
+### 权限
+
+枚举**其他用户**的进程需要 root（`EPERM`）；SIP 保护的进程即使 root 也可能被拒。
+失败时输出一行「错误 | 原因」，而不是空表：空表看起来像「这个进程没有线程」。
+用 root 重启后（工具栏「提权」）launchd 等进程就能正常列出。
+
+### 上限与取消
+
+- id 缓冲区从 4 KB 起翻倍，最大 2 MiB；表格最多列 2000 个线程（超出提示）。
+- 循环里每 64 个线程检查一次 `cproc_detail_aborted()`，切进程时能及时停。
+
+### 为什么只有 6 列
+
+`DetailTableViewController.setRows` 的列数上限是 8（Pipe 页 7 列已接近极限）。
+最初做了 9 列（用户态 / 内核态 / 优先级 / 策略分开），结果最后一列被挤到可视区
+之外；合并成「CPU 时间（用户 / 内核）」与「优先级 / 策略」后 6 列正好放下。
+策略用短码 `TS / RR / FIFO`（全称会把单元格撑破），含义写在提示行里。
+
+### 顺带修掉的两个结构性问题
+
+1. **页签下标不再散落各处**。原来 `tabs` 数组、`items(for:)`、`tableVC(for:)`、
+   内部 `DetailTab` 枚举、全局搜索的 `GlobalSearchSource` 各抄了一份数字，
+   插一个页签要改五处。现在 `enum DetailTab: Int, CaseIterable` 是唯一来源，
+   其余一律 `DetailTab(rawValue:)` / `.rawValue`，全局搜索也用同一套。
+2. **列宽不再被程序化设置污染**。重建列时给 `col.width` 赋值同样会触发
+   `tableViewColumnDidResize`，把占位表的 170 / 420 写进偏好，于是第一列永远
+   偏宽、最后一列被挤出窗口。现在重建期间 `suppressWidthSave = true`，
+   下一个 runloop 才恢复保存；用户手动拖动的宽度照旧持久化。
+
+### 已退出进程
+
+线程是高频变化的数据，不随主表快照缓存，所以进程退出后这一页通常显示
+「进程已退出，退出前没有采集过这一页」——与其它惰性页一致（`applyFrozen` 只回放
+缓存里真采过的页）。
+
+### MCP
+
+`vantage-mcp` 的 `process_detail` 增加 `kind=threads`，与 GUI 同源同格式。

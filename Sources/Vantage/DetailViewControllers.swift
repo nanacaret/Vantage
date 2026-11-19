@@ -7,7 +7,8 @@ import Foundation
 // ---------------------------------------------------------------------
 
 final class DetailTableViewController: NSViewController,
-    NSTableViewDataSource, NSTableViewDelegate, RowTextCopying {
+    NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate,
+    NSSearchFieldDelegate, RowTextCopying {
 
     private let table = ActionTableView(frame: NSRect(x: 0, y: 0, width: 700, height: 400))
     private let searchField = NSSearchField(frame: .zero)
@@ -18,6 +19,27 @@ final class DetailTableViewController: NSViewController,
     /// 与主表共用同一套匹配语义（字面量 / 正则 + 无效正则回退）
     private var matcher = SearchMatcher(query: "", mode: .literal)
 
+    // 右键菜单：命中的行 / 列与解析出的路径，在菜单弹出前算好
+    private let contextMenu = NSMenu()
+    private var contextRow = -1
+    private var contextColumn = -1
+    private var contextPath: String?
+
+    /// 过滤框默认隐藏（检查器窗口用它省出纵向空间，⌘F 唤出）。
+    /// 主窗口的详情区保持常显。视图已建好时改这个值会立刻生效。
+    var filterStartsHidden = false {
+        didSet {
+            guard isViewLoaded else { return }
+            setFilterVisible(!filterStartsHidden)
+        }
+    }
+
+    /// 过滤框当前是否显示。隐藏不改变过滤内容：⌘F 唤回后文字与筛选结果都还在。
+    private(set) var isFilterVisible = true
+    private var filterTop: NSLayoutConstraint!
+    private var tableWithFilter: NSLayoutConstraint!
+    private var tableWithoutFilter: NSLayoutConstraint!
+
     /// 每个详情 Tab 唯一的列宽存储键（由 DetailTabViewController 赋值）
     var storageKey: String? {
         didSet {
@@ -25,6 +47,9 @@ final class DetailTableViewController: NSViewController,
         }
     }
     private var previousWidths: [CGFloat] = []
+    /// 重建列期间禁止落盘：程序化设置 col.width 同样会触发
+    /// tableViewColumnDidResize，把占位表的 170/420 写进偏好就再也洗不掉了。
+    private var suppressWidthSave = false
 
     /// 该页是否允许「双击 PID 数值格跳转进程」。
     /// 「监控」页设为 false：它只是 FD 类型汇总，对端 PID 应去专门的 Pipe 页看，
@@ -47,10 +72,52 @@ final class DetailTableViewController: NSViewController,
             mode: Preferences.shared.searchUseRegex ? .regex : .literal)
         if searchField.stringValue != text { searchField.stringValue = text }
         table.reloadData()
+        // 代码设进来的非空过滤（跨页定位兜底 / 全局搜索跳转）必须让过滤框可见，
+        // 否则「行莫名其妙变少」查不到原因 —— 检查器里它默认是收起的。
+        if !t.isEmpty, !isFilterVisible { setFilterVisible(true) }
     }
 
     /// 搜索模式切换后按新语义重算当前页（不重采数据）。
     func reapplyFilter() { applyFilter(searchField.stringValue) }
+
+    // -----------------------------------------------------------------
+    // 过滤框显隐（检查器里默认收起，⌘F 唤出）
+    //
+    // 过滤框占掉一行高度，而检查器窗口本来就矮；默认收起后 13 个页的表格
+    // 都能多显示两行。隐藏只改布局，不清过滤内容：⌘F 唤回后文字与结果都还在。
+    // -----------------------------------------------------------------
+
+    /// 显示 / 隐藏过滤框；`focus` 为真时把键盘焦点交给它（已有文字全选）。
+    func setFilterVisible(_ visible: Bool, focus: Bool = false) {
+        guard isViewLoaded else {
+            filterStartsHidden = !visible     // view 尚未建立：记成初始状态
+            return
+        }
+        isFilterVisible = visible
+        searchField.isHidden = !visible
+        tableWithFilter.isActive = visible
+        tableWithoutFilter.isActive = !visible
+
+        if !visible, let w = view.window,
+           let editor = searchField.currentEditor(), w.firstResponder === editor {
+            // 焦点若留在已隐藏的 field editor 上，下一次输入会打进看不见的框
+            w.makeFirstResponder(table)
+        }
+        if visible, focus {
+            // 刚解除 isHidden 的视图当轮还没完成布局，下一圈再抢焦点更稳
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self, self.isFilterVisible else { return }
+                self.view.window?.makeFirstResponder(self.searchField)
+                self.searchField.currentEditor()?.selectAll(nil)
+            }
+        }
+    }
+
+    /// ⌘F：切换过滤框显隐，唤出时自动聚焦。
+    func toggleFilter() {
+        guard isViewLoaded else { return }
+        setFilterVisible(!isFilterVisible, focus: !isFilterVisible)
+    }
 
     /// 清空当前过滤 → 找到目标行 → 选中并滚动到可见。
     /// - fd: 目标行的第一列（FD 号）精确匹配，适用于 网络 / 监控 / Pipe 页
@@ -102,6 +169,13 @@ final class DetailTableViewController: NSViewController,
             self?.performRowAction(row: row, displayColumn: col)
         }
 
+        // 右键：在 Finder 中显示 / 复制路径（File Path、Image Path、Mapped Path…）
+        table.onContextMenu = { [weak self] row, column in
+            self?.prepareContextMenu(row: row, column: column)
+        }
+        table.menu = contextMenu
+        contextMenu.delegate = self
+
         let scroll = NSScrollView(frame: .zero)
         scroll.documentView = table
         scroll.hasVerticalScroller = true
@@ -111,21 +185,33 @@ final class DetailTableViewController: NSViewController,
         searchField.placeholderString = L("detail.filterCurrentTab")
         searchField.target = self
         searchField.action = #selector(searchChanged(_:))
+        searchField.delegate = self
         searchField.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(searchField)
 
         scroll.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(scroll)
 
+        // 过滤框显隐两套约束：隐藏时表格直接顶到 view 顶部。
+        // 只切 scroll 的 top 约束，搜索框自身的 leading/trailing/top 保持不变，
+        // isHidden 已经让它不参与绘制，不会留白。
+        filterTop = searchField.topAnchor.constraint(equalTo: view.topAnchor,
+                                                    constant: 6)
+        tableWithFilter = scroll.topAnchor.constraint(
+            equalTo: searchField.bottomAnchor, constant: 6)
+        tableWithoutFilter = scroll.topAnchor.constraint(
+            equalTo: view.topAnchor, constant: 6)
         NSLayoutConstraint.activate([
-            searchField.topAnchor.constraint(equalTo: view.topAnchor, constant: 6),
-            searchField.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
-            searchField.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
-            scroll.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 6),
+            filterTop,
+            searchField.leadingAnchor.constraint(equalTo: view.leadingAnchor,
+                                                 constant: 8),
+            searchField.trailingAnchor.constraint(equalTo: view.trailingAnchor,
+                                                  constant: -8),
             scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
+        setFilterVisible(!filterStartsHidden)
 
         // NSTabViewController 懒加载：setRows 可能先于 loadView 执行并已建好列，
         // 这时不要重建，否则用户调整过的宽度会被默认值覆盖。
@@ -184,6 +270,100 @@ final class DetailTableViewController: NSViewController,
             Clipboard.setString(Clipboard.joined(rows: picked))
         }
         return true
+    }
+
+    // -----------------------------------------------------------------
+    // 右键菜单：在 Finder 中显示 / 复制路径
+    //
+    // 详情表的路径列散落在各页：文件「路径」、镜像「镜像路径」、映射
+    // 「映射文件」、概览「可执行文件路径 / Bundle」……列头各不相同，而
+    // 同一行里往往只有一格是路径。所以解析顺序是：
+    //   ① 右键命中的那一格（用户指哪打哪）
+    //   ② 该行「路径类」列（列头含 path/file/路径/镜像/映射）
+    //   ③ 从右往左第一格认得出的路径（各页都把路径放在最右）
+    // 全部认不出就只留「复制行」，Finder 项自动置灰，不会点了没反应。
+    // -----------------------------------------------------------------
+
+    /// 菜单项的路径来自「右键那一刻」的行与列，不用 selectedRow：
+    /// 键盘呼出菜单、刷新后行号变化时都不会指到别的文件。
+    private func prepareContextMenu(row: Int, column: Int) {
+        contextRow = row
+        contextColumn = column >= 0 ? columnIndex(column) : -1
+        rebuildContextMenu()
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu === contextMenu else { return }
+        rebuildContextMenu()
+    }
+
+    private func rebuildContextMenu() {
+        contextMenu.removeAllItems()
+        contextPath = nil
+        guard contextRow >= 0, contextRow < visibleRows.count else { return }
+
+        let row = visibleRows[contextRow]
+        let path = resolvedPath(in: row)
+        contextPath = path
+
+        func add(_ title: String, _ sel: Selector, needsPath: Bool = false) {
+            let item = NSMenuItem(title: title, action: sel, keyEquivalent: "")
+            item.target = self
+            item.isEnabled = needsPath ? (path != nil) : true
+            contextMenu.addItem(item)
+        }
+
+        if let p = path {
+            let header = NSMenuItem(title: PathReveal.abbreviated(p),
+                                    action: nil, keyEquivalent: "")
+            header.isEnabled = false
+            contextMenu.addItem(header)
+            contextMenu.addItem(.separator())
+        }
+
+        add(L("list.revealInFinder"), #selector(menuRevealInFinder), needsPath: true)
+        add(L("detail.menuCopyPath"), #selector(menuCopyPath), needsPath: true)
+
+        contextMenu.addItem(.separator())
+        add(L("gs.menuCopyRow"), #selector(menuCopyRow))
+    }
+
+    /// 从这一行里挑出最可信的路径，见上面的三步顺序。
+    private func resolvedPath(in row: [String]) -> String? {
+        if contextColumn >= 0, contextColumn < row.count,
+           let p = PathReveal.resolve(row[contextColumn]) {
+            return p
+        }
+        for i in row.indices where i != contextColumn && isPathColumn(i) {
+            if let p = PathReveal.resolve(row[i]) { return p }
+        }
+        return row.reversed().lazy.compactMap { PathReveal.resolve($0) }.first
+    }
+
+    /// 列头是否描述「路径」。表头已被 L() 翻译，中英两套关键词都要认。
+    private func isPathColumn(_ idx: Int) -> Bool {
+        guard idx < headers.count else { return false }
+        let h = headers[idx].lowercased()
+        if h.contains("path") || h.contains("file") || h.contains("image") {
+            return true
+        }
+        return h.contains("路径") || h.contains("镜像")
+            || h.contains("映射") || h.contains("文件")
+    }
+
+    @objc private func menuRevealInFinder() {
+        guard let p = contextPath else { return }
+        PathReveal.reveal(p)
+    }
+
+    @objc private func menuCopyPath() {
+        guard let p = contextPath else { return }
+        Clipboard.setString(p)
+    }
+
+    @objc private func menuCopyRow() {
+        guard contextRow >= 0, contextRow < visibleRows.count else { return }
+        Clipboard.setString(Clipboard.joined(rows: [visibleRows[contextRow]]))
     }
 
     func setRows(_ rows: [[String]], headers: [String]) {
@@ -260,7 +440,7 @@ final class DetailTableViewController: NSViewController,
         // 数字 / 短代码列优先判断（「对端 PID」「屏幕状态」也落这里）
         // 表头在英文模式下会被 L() 翻译，关键词必须两套都认，
         // 否则所有列都落到默认权重 120，列宽分配会退化。
-        let short = ["FD", "PID", "PPID", "窗口号", "层", "大小",
+        let short = ["FD", "PID", "PPID", "TID", "CPU", "窗口号", "层", "大小",
                      "线程", "类型", "状态", "保护", "句柄", "标志",
                      "Window ID", "Layer", "Size", "Threads", "Type",
                      "Status", "Protection", "Handle", "Flags", "Value"]
@@ -280,6 +460,7 @@ final class DetailTableViewController: NSViewController,
 
     private func rebuildColumns() {
         let widths = defaultWidths()
+        suppressWidthSave = true
         for col in table.tableColumns { table.removeTableColumn(col) }
         for i in 0..<columnCount {
             let col = NSTableColumn(
@@ -291,6 +472,9 @@ final class DetailTableViewController: NSViewController,
             table.addTableColumn(col)
         }
         applySavedWidths()
+        // 程序化设宽引发的 didResize 通知可能在本轮或下一轮 runloop 到达，
+        // 等到下一轮再放开保存
+        DispatchQueue.main.async { [weak self] in self?.suppressWidthSave = false }
     }
 
     /// 优先用 UserDefaults 里用户拖过的宽度，其次用本次刷新前的宽度
@@ -301,7 +485,9 @@ final class DetailTableViewController: NSViewController,
                 let saved = d.double(forKey: "\(key).col\(i).width")
                 if saved > 0 { col.width = CGFloat(saved); continue }
             }
-            if i < previousWidths.count { col.width = previousWidths[i] }
+            // 这里不再套用 previousWidths：能走到 rebuildColumns 说明列数
+            // 或表头已经变了，上一帧的列宽属于另一套列，套过来只会让第一列
+            // 继承占位表的 170pt（并且被写进偏好，之后永远偏宽）。
         }
     }
 
@@ -314,6 +500,7 @@ final class DetailTableViewController: NSViewController,
     }
 
     func tableViewColumnDidResize(_ notification: Notification) {
+        guard !suppressWidthSave else { return }
         saveColumnWidths()
     }
 
@@ -466,6 +653,19 @@ final class DetailTableViewController: NSViewController,
     @objc private func searchChanged(_ sender: Any?) {
         applyFilter(searchField.stringValue)
     }
+
+    /// 过滤框里按 Esc：清空过滤。检查器这种「过滤框默认收起」的场合顺带收起，
+    /// 一次 Esc 就回到「无过滤 + 全屏表格」的初始状态。
+    func control(_ control: NSControl, textView: NSTextView,
+                 doCommandBy commandSelector: Selector) -> Bool {
+        guard control === searchField,
+              commandSelector == NSSelectorFromString("cancelOperation:")
+        else { return false }
+        searchField.stringValue = ""
+        applyFilter("")
+        if filterStartsHidden { setFilterVisible(false) }
+        return true
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -479,6 +679,13 @@ final class OverviewViewController: NSViewController {
     private let subLabel = UI.label("", size: 11, color: .secondaryLabelColor)
     private let header = NSView(frame: .zero)
     private let tableVC = DetailTableViewController()
+
+    /// 概览页的过滤框归内嵌表格管：⌘F / 「默认收起」都要能找到它。
+    var filterHost: DetailTableViewController { tableVC }
+    var filterStartsHidden: Bool {
+        get { tableVC.filterStartsHidden }
+        set { tableVC.filterStartsHidden = newValue }
+    }
 
     override func loadView() {
         view = NSView()
@@ -591,8 +798,69 @@ final class OverviewViewController: NSViewController {
 // 命令行页
 // ---------------------------------------------------------------------
 
+/// 只读文本视图，右键菜单顶部多一条「在 Finder 中显示」。
+/// 命令行页里同时出现可执行文件路径与 Bundle 路径，但它们混在整段文字里
+/// 不可选格，所以取「选中文字」；没有选中就取右键落点所在的那个词。
+/// 认不出路径时原样返回系统菜单，不加多余项。
+final class PathTextView: NSTextView {
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard let base = super.menu(for: event) else { return nil }
+        guard let path = contextPath(at: event) else { return base }
+        // 复制一份再插入：系统菜单是共享实例，直接改会在下次弹出时累积重复项
+        guard let menu = base.copy() as? NSMenu else { return base }
+        let item = NSMenuItem(title: L("list.revealInFinder"),
+                              action: #selector(revealFromMenu(_:)),
+                              keyEquivalent: "")
+        item.target = self
+        item.representedObject = path
+        menu.insertItem(item, at: 0)
+        menu.insertItem(.separator(), at: 1)
+        return menu
+    }
+
+    private func contextPath(at event: NSEvent) -> String? {
+        // 有选区就只看选区：用户已经明确指了范围
+        let sel = selectedRange()
+        if sel.length > 0,
+           let p = PathReveal.resolve((string as NSString).substring(with: sel)) {
+            return p
+        }
+        guard let token = token(at: convert(event.locationInWindow, from: nil))
+        else { return nil }
+        return PathReveal.resolve(token)
+    }
+
+    /// 从落点向两侧扩到空白 / 引号，得到一个候选 token
+    private func token(at point: NSPoint) -> String? {
+        let ns = string as NSString
+        guard ns.length > 0 else { return nil }
+        var i = characterIndexForInsertion(at: point)
+        if i >= ns.length { i = ns.length - 1 }
+        if isBreak(ns.character(at: i)), i > 0,
+           !isBreak(ns.character(at: i - 1)) { i -= 1 }
+        guard !isBreak(ns.character(at: i)) else { return nil }
+        var start = i, end = i
+        while start > 0, !isBreak(ns.character(at: start - 1)) { start -= 1 }
+        while end < ns.length, !isBreak(ns.character(at: end)) { end += 1 }
+        return ns.substring(with: NSRange(location: start, length: end - start))
+    }
+
+    private func isBreak(_ c: unichar) -> Bool {
+        guard let scalar = Unicode.Scalar(c) else { return true }
+        if CharacterSet.whitespacesAndNewlines.contains(scalar) { return true }
+        return CharacterSet(charactersIn: "\"'`()<>[]：:，,。")
+            .contains(scalar)
+    }
+
+    @objc private func revealFromMenu(_ sender: NSMenuItem) {
+        guard let p = sender.representedObject as? String else { return }
+        PathReveal.reveal(p)
+    }
+}
+
 final class CommandLineViewController: NSViewController {
-    private let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 700, height: 400))
+    private let textView = PathTextView(frame: NSRect(x: 0, y: 0, width: 700, height: 400))
 
     override func loadView() {
         view = NSView()
@@ -632,10 +900,350 @@ extension CommandLineViewController: RowTextCopying {}
 // Tab 容器
 // ---------------------------------------------------------------------
 
+/// 检查器页签的顺序 —— 单一事实来源。
+///
+/// 之前 `tabs` 数组、`items(for:)`、`tableVC(for:)`、`DetailTab` 枚举和全局
+/// 搜索各自抄了一份数字下标，插一个页签要改五处，漏一处就是「点文件页跳到
+/// 窗口页」这种错位。顺序只在这里定义，其余地方一律用 `DetailTab(rawValue:)`。
+enum DetailTab: Int, CaseIterable {
+    case overview, files, env, dylibs, sockets, monitoring, pipePeers, regions
+    case tty, threads, windows, signing, mach, command
+
+    /// 需要独立采集的页（概览用主表快照、命令页是纯文本）
+    static var collectable: [DetailTab] {
+        allCases.filter { $0 != .overview && $0 != .command }
+    }
+}
+
+/// 页签标题：普通项按 l10n key 取当前语言译文；"=Pipe" 这类
+/// 前缀表示字面量（技术名词不翻译）。
+fileprivate func detailTabTitle(_ key: String) -> String {
+    key.hasPrefix("=") ? String(key.dropFirst()) : L(key)
+}
+
+/// 多行页签条。
+///
+/// NSTabViewController 自带的 segmented control 只有一行，14 个页签在
+/// 窄窗口下会被截断。这里把页签拆成多行，每行一个 NSSegmentedControl，
+/// 两种排布：
+///   · 自动（偏好设为 0，默认）：按每个标题的实际文字宽度贪心换行，
+///     段宽 = 文字宽 + 内边距，行内不再拉伸，所以每行个数可以不同，
+///     窄窗口下会自动折行、宽窗口下自动并回一行，右侧没有大片空白。
+///   · 固定（2…14）：每行固定个数、等宽等分，行数 = ceil(n / perRow)，
+///     沿用原来的行为。
+/// 自动模式要在宽度变化时重排，所以重排放在 layout() 里，用 packedWidth
+/// 去重，避免约束更新触发的下一次 layout 又重建一遍。
+final class DetailTabBarView: NSView {
+    var onSelect: ((Int) -> Void)?
+
+    private(set) var selectedIndex = 0
+    private let stack = NSStackView()
+    private var rows: [NSSegmentedControl] = []
+    private var titles: [String] = []
+    /// 0 = 自动换行；>0 = 每行固定个数
+    private var perRow = 0
+    private var heightConstraint: NSLayoutConstraint!
+    /// 上一次自动换行时使用的可用宽度；只有宽度真的变了才重排
+    private var packedWidth: CGFloat = -1
+    private var isRebuilding = false
+
+    private static let rowHeight: CGFloat = 22
+    private static let rowSpacing: CGFloat = 4
+    /// 段宽 = 文字宽 + 该常量（NSSegmentedControl .small 的左右内边距与
+    /// 分隔线，实测 ≈18.5，取 20 留一点余量避免末尾字母被切）
+    private static let segmentPadding: CGFloat = 20
+    private static let labelFont = NSFont.systemFont(ofSize: 11)
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        stack.orientation = .vertical
+        stack.spacing = Self.rowSpacing
+        stack.alignment = .centerX
+        stack.distribution = .fill
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stack.topAnchor.constraint(equalTo: topAnchor),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+        heightConstraint = heightAnchor.constraint(equalToConstant: Self.rowHeight)
+        heightConstraint.isActive = true
+    }
+
+    required init?(coder: NSCoder) { return nil }
+
+    func configure(titles: [String], perRow: Int) {
+        self.titles = titles
+        self.perRow = max(0, perRow)
+        // 标题或模式变了：强制按当前宽度重新排一次
+        packedWidth = -1
+        rebuildRows(available: bounds.width)
+        syncSelection()
+    }
+
+    func select(_ index: Int) {
+        selectedIndex = index
+        syncSelection()
+    }
+
+    // -----------------------------------------------------------------
+    // 重排
+    // -----------------------------------------------------------------
+
+    private func rebuildRows(available: CGFloat) {
+        guard !isRebuilding else { return }
+        isRebuilding = true
+        defer { isRebuilding = false }
+
+        for v in stack.arrangedSubviews {
+            stack.removeArrangedSubview(v)
+            v.removeFromSuperview()
+        }
+        rows.removeAll()
+
+        // 固定模式每行等宽铺满（居中对齐即可）；自动模式行宽随内容，
+        // 左对齐才不会每行都缩在中间。
+        stack.alignment = perRow > 0 ? .centerX : .leading
+
+        let groups = rowGroups(available: available)
+
+        for group in groups {
+            guard let first = group.first else { continue }
+            let seg = NSSegmentedControl(
+                labels: group.map { titles[$0] },
+                trackingMode: .selectOne,
+                target: self,
+                action: #selector(segmentClicked(_:)))
+            // tag 记录本行第一项在全局数组里的下标
+            seg.tag = first
+            seg.controlSize = .small
+            seg.font = Self.labelFont
+            seg.translatesAutoresizingMaskIntoConstraints = false
+            seg.heightAnchor.constraint(equalToConstant: Self.rowHeight).isActive = true
+            seg.toolTip = rowTooltip(group)
+
+            if perRow > 0 {
+                // 固定模式：每行等宽铺满，和旧行为一致
+                seg.segmentDistribution = .fillEqually
+                seg.setContentHuggingPriority(.defaultLow, for: .horizontal)
+                stack.addArrangedSubview(seg)
+                seg.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            } else {
+                // 自动模式：段宽按文字长度显式指定，控件不再被拉伸
+                seg.segmentDistribution = .fill
+                let limit = max(available, 80)
+                for (i, idx) in group.enumerated() {
+                    let w = min(Self.segmentWidth(for: titles[idx]), limit)
+                    seg.setWidth(w, forSegment: i)
+                }
+                seg.setContentHuggingPriority(.required, for: .horizontal)
+                seg.setContentCompressionResistancePriority(.required,
+                                                            for: .horizontal)
+                stack.addArrangedSubview(seg)
+            }
+            rows.append(seg)
+        }
+
+        let n = CGFloat(rows.count)
+        heightConstraint.constant = n * Self.rowHeight
+            + max(0, n - 1) * Self.rowSpacing
+        syncSelection()
+    }
+
+    private func rowGroups(available: CGFloat) -> [[Int]] {
+        guard !titles.isEmpty else { return [] }
+        if perRow > 0 {
+            var out: [[Int]] = []
+            var start = 0
+            while start < titles.count {
+                let end = min(start + perRow, titles.count)
+                out.append(Array(start..<end))
+                start = end
+            }
+            return out
+        }
+        return Self.pack(titles: titles, available: max(available, 120))
+    }
+
+    /// 自动模式折行：先贪心算出最少要几行，再把总宽度尽量平均到各行，
+    /// 避免出现「第一行塞满 + 第二行只有一个页签」的孤行。
+    private static func pack(titles: [String], available: CGFloat) -> [[Int]] {
+        let widths = titles.map { min(segmentWidth(for: $0), available) }
+        let greedy = pack(widths: widths, limit: available)
+        guard greedy.count > 1 else { return greedy }
+
+        // 二分「单行宽度上限」：行数不变的前提下取最小的上限，
+        // 各行宽度就趋于一致（页签仍按原顺序，个数可以不同）。
+        var lo = widths.max() ?? 0
+        var hi = available
+        for _ in 0..<10 {
+            let mid = (lo + hi) / 2
+            if pack(widths: widths, limit: mid).count <= greedy.count {
+                hi = mid
+            } else {
+                lo = mid
+            }
+        }
+        return pack(widths: widths, limit: hi)
+    }
+
+    /// 按「单行最大宽度」贪心切行
+    private static func pack(widths: [CGFloat], limit: CGFloat) -> [[Int]] {
+        var out: [[Int]] = []
+        var current: [Int] = []
+        var used: CGFloat = 0
+        for (i, w) in widths.enumerated() {
+            // +1 是段与段之间的分隔线
+            if !current.isEmpty, used + w + 1 > limit {
+                out.append(current)
+                current = []
+                used = 0
+            }
+            current.append(i)
+            used += w + 1
+        }
+        if !current.isEmpty { out.append(current) }
+        return out
+    }
+
+    private static func segmentWidth(for title: String) -> CGFloat {
+        let w = (title as NSString)
+            .size(withAttributes: [.font: labelFont]).width
+        return ceil(w) + segmentPadding
+    }
+
+    // -----------------------------------------------------------------
+    // 宽度变化 → 自动模式重排
+    // -----------------------------------------------------------------
+
+    override func layout() {
+        super.layout()
+        guard perRow == 0, bounds.width > 0 else { return }
+        guard abs(bounds.width - packedWidth) > 0.5 else { return }
+        packedWidth = bounds.width
+        rebuildRows(available: bounds.width)
+    }
+
+    private func syncSelection() {
+        for seg in rows {
+            let offset = selectedIndex - seg.tag
+            seg.selectedSegment = (offset >= 0 && offset < seg.segmentCount)
+                ? offset : -1
+        }
+    }
+
+    @objc private func segmentClicked(_ sender: NSSegmentedControl) {
+        let index = sender.tag + sender.selectedSegment
+        guard index >= 0, index < titles.count else { return }
+        selectedIndex = index
+        syncSelection()
+        onSelect?(index)
+    }
+}
+
+private extension DetailTabBarView {
+    /// 本行所有页签标题，用于 tooltip
+    func rowTooltip(_ group: [Int]) -> String {
+        group.compactMap { titles[safe: $0] }.joined(separator: " · ")
+    }
+}
+/// 详情页签容器：上部是多行页签条，下部是 NSTabViewController 的内容。
+///
+/// 必须包一层：NSTabViewController 的 `view` 就是它管理的 NSTabView，
+/// 不能直接往里塞自定义页签条。这里让它以 `.unspecified` 样式运行
+/// （不画系统页签），由外面的 DetailTabBarView 驱动
+/// `selectedTabViewItemIndex`，选中变化仍走原来的 didSelect /
+/// syncTabSelection 路径，惰性加载逻辑不受影响。
+final class DetailTabPaneController: NSViewController {
+    let tabs: DetailTabViewController
+    private let bar = DetailTabBarView()
+    private var observers: [NSObjectProtocol] = []
+
+    init(tabs: DetailTabViewController) {
+        self.tabs = tabs
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { return nil }
+
+    override func loadView() {
+        view = NSView()
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+
+        addChild(tabs)
+        let content = tabs.view
+        content.translatesAutoresizingMaskIntoConstraints = false
+        bar.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(bar)
+        view.addSubview(content)
+
+        NSLayoutConstraint.activate([
+            bar.topAnchor.constraint(equalTo: view.topAnchor, constant: 6),
+            bar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
+            bar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
+
+            content.topAnchor.constraint(equalTo: bar.bottomAnchor, constant: 6),
+            content.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            content.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+
+        bar.onSelect = { [weak self] index in
+            self?.tabs.select(tab: index)
+        }
+        tabs.onTabSelected = { [weak self] index in
+            self?.bar.select(index)
+        }
+
+        rebuild()
+
+        // 每行上限改动 / 语言切换后重建页签条
+        observers.append(NotificationCenter.default.addObserver(
+            forName: .preferencesDidChange, object: nil, queue: .main) {
+                [weak self] _ in self?.rebuild()
+        })
+        observers.append(NotificationCenter.default.addObserver(
+            forName: .languageDidChange, object: nil, queue: .main) {
+                [weak self] _ in self?.relocalizeTabs()
+        })
+    }
+
+    deinit {
+        for o in observers { NotificationCenter.default.removeObserver(o) }
+    }
+
+    private func rebuild() {
+        bar.select(tabs.selectedTabViewItemIndex)
+        bar.configure(titles: tabs.tabViewItems.map { $0.label },
+                      perRow: Preferences.shared.detailTabsPerRow)
+    }
+
+    /// 页签文字是启动时按当时语言建好的；切换语言后就地转换并重建。
+    private func relocalizeTabs() {
+        let keys = tabs.tabTitleKeys
+        // 只在数量对齐时按 key 重取；万一将来插页忘了同步，就保持原文案
+        if keys.count == tabs.tabViewItems.count {
+            for (i, item) in tabs.tabViewItems.enumerated() {
+                item.label = detailTabTitle(keys[i])
+            }
+        }
+        rebuild()
+    }
+}
+
 final class DetailTabViewController: NSTabViewController {
 
     /// 检查器窗口可锁定某个 PID；nil 时跟随全局选中项
     var fixedPID: Int32?
+
+    /// 过滤框默认收起（检查器用它省出纵向空间，⌘F 唤出）。
+    /// 必须在内容视图加载之前设置；主窗口保持 false，详情区过滤框常显。
+    var hidesFilterByDefault = false
 
     private let overview = OverviewViewController()
     private let files = DetailTableViewController()
@@ -649,14 +1257,25 @@ final class DetailTabViewController: NSTabViewController {
     private let regions = DetailTableViewController()
     private let pipePeers = DetailTableViewController()
     private let tty = DetailTableViewController()
+    private let threads = DetailTableViewController()
     private let windows = DetailTableViewController()
 
     private var generation: UInt64 = 0
     private var activeEpoch: UInt64 = 0
     private var selectedTabIndex: Int = 0
     private var tabSelectionObserver: NSObjectProtocol?
+    /// 各页签标题的 l10n key（"=Pipe" / "=Mach" 这类 "=" 前缀是字面量）。
+    /// 语言切换时按 key 重新取译文，不能对已显示的文案做 value→key 反查：
+    /// 不同 key 的中文值可能撞车（例如「环境」与「环境变量」），
+    /// 反查会把页签标题改成别的条目的译文。
+    fileprivate(set) var tabTitleKeys: [String] = []
+    /// 当前页签变化（多行页签条据此高亮）。任何路径改了选中页都会回调：
+    /// 用户点系统页签、点自定义页签条、⌘F 跳转、全局搜索定位。
+    var onTabSelected: ((Int) -> Void)?
     private var loadedKeys: Set<String> = []
     private var lastPID: Int32?
+    /// 最后一次拿到的快照（含已退出进程），用于宽限期结束后继续冻结展示
+    private var lastSnapshot: ProcessSnapshot?
 
     /// 文件页双击后要跳到的页与目标行。目标页是惰性加载的，必须等
     /// apply() 把数据填完再定位，所以先存起来。
@@ -728,37 +1347,45 @@ final class DetailTabViewController: NSTabViewController {
     }
 
     override func loadView() {
-        tabStyle = .segmentedControlOnTop
+        // 不画系统页签：页签条由外层 DetailTabPaneController 提供（支持多行）。
+        tabStyle = .unspecified
         super.loadView()
     }
 
     override func viewDidLoad() {
         super.viewDidLoad()
 
-        // 13 个页签，全部对应「不需要 task port」或已有降级的采集能力。
+        // 14 个页签，全部对应「不需要 task port」或已有降级的采集能力。
         // 标签统一压到 2 个字，避免 segmented control 在窄窗口下把文字截没。
         // 注意：顺序与 items(for:) / applyLines 的 index 一一对应，插入新页时
         // 必须同步改这两处的 case 编号。
         let tabs: [(String, String, NSViewController)] = [
-            (L("detail.overview"),   "overview",   overview),
-            (L("detail.file"),   "files",      files),
-            (L("detail.environment"),   "env",        env),
-            (L("detail.images"),   "dylibs",     dylibs),
-            (L("detail.network"),   "sockets",    sockets),
-            (L("detail.monitoring"),   "monitoring", monitoring),
-            ("Pipe",   "pipepeers",  pipePeers),
-            (L("detail.mapping"),   "regions",    regions),
-            ("TTY",    "tty",        tty),
-            (L("detail.window"),   "windows",    windows),
-            (L("detail.signing"),   "signing",    signing),
-            ("Mach",   "mach",       mach),
-            (L("detail.command"),   "command",    command),
+            ("detail.overview",   "overview",   overview),
+            ("detail.file",   "files",      files),
+            ("detail.environment",   "env",        env),
+            ("detail.images",   "dylibs",     dylibs),
+            ("detail.network",   "sockets",    sockets),
+            ("detail.monitoring",   "monitoring", monitoring),
+            ("=Pipe",   "pipepeers",  pipePeers),
+            ("detail.mapping",   "regions",    regions),
+            ("=TTY",    "tty",        tty),
+            ("detail.threadsTab", "threads",  threads),
+            ("detail.window",   "windows",    windows),
+            ("detail.signing",   "signing",    signing),
+            ("=Mach",   "mach",       mach),
+            ("detail.command",   "command",    command),
         ]
-        for (title, key, vc) in tabs {
-            (vc as? DetailTableViewController)?.storageKey =
-                "Vantage.detail.\(key)"
+        tabTitleKeys = tabs.map { $0.0 }
+        for (titleKey, key, vc) in tabs {
+            if let t = vc as? DetailTableViewController {
+                t.storageKey = "Vantage.detail.\(key)"
+                // 检查器里过滤框默认收起（⌘F 唤出）；主窗口保持常显
+                t.filterStartsHidden = hidesFilterByDefault
+            } else if let o = vc as? OverviewViewController {
+                o.filterStartsHidden = hidesFilterByDefault
+            }
             let item = NSTabViewItem(viewController: vc)
-            item.label = title
+            item.label = detailTabTitle(titleKey)
             addTabViewItem(item)
         }
 
@@ -811,21 +1438,26 @@ final class DetailTabViewController: NSTabViewController {
     }
 
     /// 只加载当前页签。概览 / 命令页用主表快照，完全不做系统调用；
-    /// 其余每页只采自己那一项。这样选中一个重 app 不再是「13 页全量扫一遍」。
+    /// 其余每页只采自己那一项。这样选中一个重 app 不再是「14 页全量扫一遍」。
     private func selectTab(_ index: Int) {
-        guard index >= 0, index != selectedTabIndex else { return }
+        guard index >= 0, index < tabViewItems.count else { return }
+        // 先通知页签条（即使 index 没变，也要保证高亮与真实选中一致）
+        onTabSelected?(index)
+        guard index != selectedTabIndex else { return }
         selectedTabIndex = index
         reload()
+    }
+
+    /// 供外层多行页签条切换页面。
+    func select(tab index: Int) {
+        guard index >= 0, index < tabViewItems.count else { return }
+        selectedTabViewItemIndex = index
+        selectTab(index)
     }
 
     // -----------------------------------------------------------------
     // 「文件」页双击 → 按 FD 类型跳到对应页并定位到该 FD 那一行
     // -----------------------------------------------------------------
-
-    private enum DetailTab: Int {
-        case files = 1, sockets = 4, monitoring = 5, pipePeers = 6, tty = 8
-        case windows = 9, signing = 10, mach = 11
-    }
 
     /// 「窗口」页：双击或修饰键单击窗口条目 → 激活（前置）那个具体窗口。
     /// 第一列是窗口号；摘要行（Owner PID / 提示）与无窗口占位行不命中，
@@ -871,6 +1503,7 @@ final class DetailTabViewController: NSTabViewController {
         // 再让 segmented control 跟上。reload() 会采目标页 → apply() → flush。
         selectedTabIndex = tab.rawValue
         selectedTabViewItemIndex = tab.rawValue
+        onTabSelected?(tab.rawValue)
         reload()
         return true
     }
@@ -905,32 +1538,48 @@ final class DetailTabViewController: NSTabViewController {
     /// 由 InspectorWindowController 转发。目标页是惰性加载的，所以先记下
     /// 待办，等 apply() 把数据填完再由 flushPendingFocus() 执行定位。
     func focus(tab: Int, textKeys: [String]) {
-        guard tab >= 0, tab < 13 else { return }
+        guard DetailTab(rawValue: tab) != nil else { return }
         pendingFocus = (tab: tab, keys: textKeys.filter { !$0.isEmpty })
         if selectedTabIndex != tab {
             selectedTabIndex = tab
             selectedTabViewItemIndex = tab
         }
+        onTabSelected?(tab)
         reload()
         // 数据已全部命中缓存时 apply() 会同步走完，pendingFocus 当场清掉；
         // 否则等后台采集完成后的 apply() 再处理。
     }
 
     private func tableVC(for tab: Int) -> DetailTableViewController? {
-        switch tab {
-        case 1:  return files
-        case 2:  return env
-        case 3:  return dylibs
-        case 4:  return sockets
-        case 5:  return monitoring
-        case 6:  return pipePeers
-        case 7:  return regions
-        case 8:  return tty
-        case 9:  return windows
-        case 10: return signing
-        case 11: return mach
-        default: return nil      // 概览 / 命令页是文本视图，没有行可选
+        switch DetailTab(rawValue: tab) {
+        case .files:        return files
+        case .env:          return env
+        case .dylibs:       return dylibs
+        case .sockets:      return sockets
+        case .monitoring:   return monitoring
+        case .pipePeers:    return pipePeers
+        case .regions:      return regions
+        case .tty:          return tty
+        case .threads:      return threads
+        case .windows:      return windows
+        case .signing:      return signing
+        case .mach:         return mach
+        case .overview, .command, .none: return nil   // 文本视图，没有行可选
         }
+    }
+
+    /// ⌘F：切换当前页过滤框的显隐（唤出时自动聚焦）。
+    /// 「命令」页是整段文本、没有过滤框，直接忽略。
+    func toggleFilter() {
+        let host: DetailTableViewController?
+        if selectedTabIndex == 0 {
+            host = overview.filterHost      // 概览页的过滤框在内嵌表格里
+        } else {
+            host = tableVC(for: selectedTabIndex)
+        }
+        guard let target = host else { return }
+        _ = target.view                     // 惰性页：先让视图（与默认收起状态）生效
+        target.toggleFilter()
     }
 
     private func flushPendingFocus() {
@@ -957,26 +1606,41 @@ final class DetailTabViewController: NSTabViewController {
 
     /// 页签 index 与 viewDidLoad 里 addTabViewItem 的顺序一一对应
     private func items(for tab: Int, pid: Int32, path: String) -> [Item] {
-        switch tab {
-        case 0:  return [Item(key: "port") { .port(ProcBridge.taskPort(pid) ?? 0) }]
-        case 1:  return [lineItem("files",      .openFiles,    pid: pid)]
-        case 2:  return [lineItem("env",        .environment,  pid: pid)]
-        case 3:  return [lineItem("dylibs",     .dylibs,       pid: pid)]
-        case 4:  return [lineItem("sockets",    .sockets,      pid: pid)]
-        case 5:  return [lineItem("monitoring", .monitoring,   pid: pid)]
-        case 6:  return [lineItem("pipePeers",  .pipePeers,    pid: pid)]
-        case 7:  return [lineItem("regions",    .regions,      pid: pid)]
-        case 8:  return [lineItem("tty",        .tty,          pid: pid)]
-        case 9:  return [Item(key: "windows") {
-            // CGWindowListCopyWindowInfo 是纯 CG API，可跑在后台采集队列；
-            // 窗口号 / 层 / bounds / 共享状态都不需要屏幕录制授权。
-            .lines(WindowLocator.detailLines(for: pid))
-        }]
-        case 10: return [Item(key: "signing") {
-            .pairs(SigningReader.read(pid: pid, path: path).rows)
-        }]
-        case 11: return [lineItem("mach",       .machSecurity, pid: pid)]
-        default: return []                       // 命令页：只用快照
+        switch DetailTab(rawValue: tab) {
+        case .overview:
+            return [Item(key: "port") { .port(ProcBridge.taskPort(pid) ?? 0) }]
+        case .files:
+            return [lineItem("files",      .openFiles,    pid: pid)]
+        case .env:
+            return [lineItem("env",        .environment,  pid: pid)]
+        case .dylibs:
+            return [lineItem("dylibs",     .dylibs,       pid: pid)]
+        case .sockets:
+            return [lineItem("sockets",    .sockets,      pid: pid)]
+        case .monitoring:
+            return [lineItem("monitoring", .monitoring,   pid: pid)]
+        case .pipePeers:
+            return [lineItem("pipePeers",  .pipePeers,    pid: pid)]
+        case .regions:
+            return [lineItem("regions",    .regions,      pid: pid)]
+        case .tty:
+            return [lineItem("tty",        .tty,          pid: pid)]
+        case .threads:
+            return [lineItem("threads",    .threads,      pid: pid)]
+        case .windows:
+            return [Item(key: "windows") {
+                // CGWindowListCopyWindowInfo 是纯 CG API，可跑在后台采集队列；
+                // 窗口号 / 层 / bounds / 共享状态都不需要屏幕录制授权。
+                .lines(WindowLocator.detailLines(for: pid))
+            }]
+        case .signing:
+            return [Item(key: "signing") {
+                .pairs(SigningReader.read(pid: pid, path: path).rows)
+            }]
+        case .mach:
+            return [lineItem("mach",       .machSecurity, pid: pid)]
+        case .command, .none:
+            return []                       // 命令页：只用快照
         }
     }
 
@@ -993,29 +1657,49 @@ final class DetailTabViewController: NSTabViewController {
         let epoch = ProcBridge.beginDetailEpoch()
         activeEpoch = epoch
 
-        let snap = AppContext.shared.store.process(withPID: pid)
-        let path = snap?.exepath ?? ""
-        let tab = selectedTabIndex
-        let cache = DetailLoadCache.shared
-
-        // 换进程时清掉所有页，绝不在「文件」页上留下上一个进程的 FD 列表
+        // 换进程时清掉所有页，绝不在「文件」页上留下上一个进程的 FD 列表。
+        // **必须在取快照之前**清 lastSnapshot：否则本帧刚取到的「已退出快照」
+        // 会被这里一并清掉，下一次 reload 就退回按活进程采集 → 一屏 sysctl 报错。
         if lastPID != pid {
             lastPID = pid
+            lastSnapshot = nil
             loadedKeys.removeAll()
             pendingLocate = nil      // 跨页定位只属于双击时的那个进程
             clearStalePages()
         }
 
+        // 已退出进程的快照只存在于宽限期里；检查器开得比它久时不能再退回
+        // 「按活进程采集」，所以记住最后一次见到的快照继续渲染。
+        if let found = AppContext.shared.store.snapshotIncludingExited(for: pid) {
+            lastSnapshot = found
+        }
+        let snap = lastSnapshot
+        // 已退出（宽限期快照）：只用主表里已采到的值 + 缓存里已采过的页，
+        // 不再对死掉的 PID 发任何系统调用 —— 那些调用只会返回 ESRCH，
+        // 让用户看到一堆「读取失败」，没有任何信息量。
+        let exited = snap?.isExited == true
+        let path = snap?.exepath ?? ""
+        let tab = selectedTabIndex
+        let cache = DetailLoadCache.shared
+
         // 轻量页立即出内容，不等后台队列
-        overview.setSnapshot(snap, port: cachedPort(pid: pid, force: force))
+        overview.setSnapshot(snap, port: exited ? nil : cachedPort(pid: pid, force: force))
         command.set(text: commandText(pid: pid, snap: snap))
 
+        if exited {
+            // 退出前采过的页照原样回放；没采过的页直接留空（不显示「正在采集…」）
+            loadedKeys.removeAll()
+            applyFrozen(cache, pid: pid, snap: snap, tab: tab)
+            return
+        }
+
         // 偏好设置里关掉「按页惰性加载」时回到全量采集（供性能对比 / 排错）。
-        // 默认只采当前页，选中重 app 不再付 13 页的成本。
-        // 0...11 = 所有有独立采集的页；12 是「命令」页，只用主表快照。
+        // 默认只采当前页，选中重 app 不再付 14 页的成本。
         let wanted: [Item] = Preferences.shared.lazyDetailLoading
             ? items(for: tab, pid: pid, path: path)
-            : (0...11).flatMap { items(for: $0, pid: pid, path: path) }
+            : DetailTab.collectable.flatMap {
+                items(for: $0.rawValue, pid: pid, path: path)
+            }
         var ready: [String: DetailLoadCache.Payload] = [:]
         var pending: [Item] = []
         for it in wanted {
@@ -1042,8 +1726,12 @@ final class DetailTabViewController: NSTabViewController {
                 if ProcBridge.detailAborted() { break }
                 guard let payload = it.load(), !ProcBridge.detailAborted() else { break }
                 results[it.key] = payload
-                // 被取消产生的半截结果不写入缓存
-                cache.put(payload, key: it.key, pid: pid)
+                // 被取消产生的半截结果不写入缓存；采集失败（C 层首行是「错误」）
+                // 的也不写 —— 否则进程退出后检查器读到这条缓存，会一直显示
+                // 一屏「sysctl 失败」，把「退出前没采过」这个事实盖掉。
+                if !Self.payloadIsCollectionError(payload) {
+                    cache.put(payload, key: it.key, pid: pid)
+                }
             }
             guard !ProcBridge.detailAborted() else { return }
             DispatchQueue.main.async { [weak self] in
@@ -1052,6 +1740,41 @@ final class DetailTabViewController: NSTabViewController {
                 self.apply(results, pid: pid, snap: snap)
             }
         }
+    }
+
+    /// 已退出进程的页签内容：只从缓存回放，不发起采集。
+    /// 当前页一页都没有缓存时，明确写「退出前没采过这一页」，
+    /// 避免用户盯着「切换到本页时加载…」等一个永远不会来的结果。
+    private func applyFrozen(_ cache: DetailLoadCache, pid: Int32,
+                             snap: ProcessSnapshot?, tab: Int) {
+        var ready: [String: DetailLoadCache.Payload] = [:]
+        var keysForCurrentTab: [String] = []
+        for t in DetailTab.collectable.map(\.rawValue) {
+            let keys = items(for: t, pid: pid, path: snap?.exepath ?? "").map { $0.key }
+            if t == tab { keysForCurrentTab = keys }
+            for k in keys where ready[k] == nil {
+                if let hit = cache.peek(k, pid: pid) { ready[k] = hit }
+            }
+        }
+        let hasCurrent = keysForCurrentTab.contains { ready[$0] != nil }
+        if !hasCurrent { showExitedPlaceholder(tab) }
+        apply(ready, pid: pid, snap: snap)
+    }
+
+    private func showExitedPlaceholder(_ tab: Int) {
+        // 概览 / 命令页用的是快照，没有表格可写占位
+        guard let t = DetailTab(rawValue: tab),
+              t != .overview, t != .command else { return }
+        tableVC(for: tab)?.showPlaceholder(L("detail.exitedNothingCollected"))
+    }
+
+    /// C 层的采集失败会在首行写「错误」+ 原因，这种结果不该进缓存
+    private static func payloadIsCollectionError(_ payload: DetailLoadCache.Payload) -> Bool {
+        guard case .lines(let lines) = payload, let first = lines.first else {
+            return false
+        }
+        let head = first.components(separatedBy: "\t").first ?? ""
+        return L10n.cFieldZh(head) == "错误" || head == "错误"
     }
 
     private func cachedPort(pid: Int32, force: Bool) -> UInt32? {
@@ -1077,7 +1800,7 @@ final class DetailTabViewController: NSTabViewController {
 
     private func clearStalePages() {
         for vc in [files, env, dylibs, sockets, monitoring, mach,
-                   regions, pipePeers, tty, windows] {
+                   regions, pipePeers, tty, threads, windows] {
             vc.showPlaceholder(L("detail.loadedWhenThisTabIs"))
         }
         signing.showPlaceholder(L("detail.loadedWhenThisTabIs2"))
@@ -1146,6 +1869,14 @@ final class DetailTabViewController: NSTabViewController {
         case "tty":
             tty.setRows(parse(lines, titles: ["项目", "值", "说明"]),
                         headers: [L("detail.item6"), L("detail.value"), L("detail.description")])
+        case "threads":
+            threads.setRows(
+                parse(lines, titles: ["TID", "线程名", "状态", "CPU",
+                                      "CPU 时间（用户 / 内核）",
+                                      "优先级 / 调度策略"]),
+                headers: ["TID", L("detail.threadName"), L("detail.status"),
+                          "CPU", L("detail.cpuTimeUserSystem"),
+                          L("detail.priorityPolicy")])
         case "windows":
             windows.setRows(
                 parse(lines, titles: ["窗口号", "标题", "层",

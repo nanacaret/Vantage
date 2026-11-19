@@ -1924,3 +1924,156 @@ int cproc_signal(int32_t pid, int32_t sig)
 {
     return kill((pid_t)pid, sig);
 }
+
+/* ------------------------------------------------------------------ */
+/* 线程清单                                                            */
+/*                                                                     */
+/* 公开 SDK 里能用的只有两个 flavor（都在 <sys/proc_info.h>）：        */
+/*   PROC_PIDLISTTHREADS  → 每次 8 字节的 64 位 thread id 数组         */
+/*   PROC_PIDTHREADINFO   → 以 thread id 为 arg，取 struct             */
+/*                          proc_threadinfo（时间 / 状态 / 优先级 /    */
+/*                          名称）                                     */
+/*                                                                     */
+/* 注意：流传较广的 PROC_PIDLISTTHREADIDS 并没有出现在公开头文件里；   */
+/* 当前系统上那个数字 flavor 返回的既不是线程数也不是合法 thread id    */
+/* （拿它去查 PROC_PIDTHREADINFO 一律失败），所以这里只用上面两个公开   */
+/* 常量，行为可验证。                                                  */
+/*                                                                     */
+/* 权限：枚举其他用户的进程需要 root（EPERM），SIP 保护的进程即使 root  */
+/* 也可能被拒 —— 与 task port 的限制不同，这里给的是明确的错误行。      */
+/* ------------------------------------------------------------------ */
+
+#define CPROC_THREAD_ID_MAX   (1u << 21)   /* 单次最多 256K 个 id（2 MiB） */
+#define CPROC_THREAD_SHOW_MAX 2000         /* 表格里最多列这么多线程 */
+
+static const char *thread_state_name(int32_t st)
+{
+    switch (st) {
+    case TH_STATE_RUNNING:         return "运行中";
+    case TH_STATE_STOPPED:         return "已停止";
+    case TH_STATE_WAITING:         return "等待中";
+    case TH_STATE_UNINTERRUPTIBLE: return "不可中断";
+    case TH_STATE_HALTED:          return "已终止";
+    default:                       return "未知";
+    }
+}
+
+/* 策略用短码：这一列和优先级共用单元格，写全称会把策略名截掉。
+ * TS = timeshare（普通分时），RR = round-robin，FIFO = 实时 FIFO。 */
+static const char *thread_policy_name(int32_t p)
+{
+    switch (p) {
+    case POLICY_TIMESHARE: return "TS";
+    case POLICY_RR:        return "RR";
+    case POLICY_FIFO:      return "FIFO";
+    default:               return "?";
+    }
+}
+
+/* pth_user_time / pth_system_time 的单位是纳秒（不是 mach absolute time） */
+static void thread_time_text(uint64_t ns, char *out, size_t cap)
+{
+    double s = (double)ns / 1e9;
+    if (s >= 3600.0)      snprintf(out, cap, "%.2f h", s / 3600.0);
+    else if (s >= 60.0)   snprintf(out, cap, "%d m %.1f s", (int)(s / 60.0), s - 60.0 * (int)(s / 60.0));
+    else                  snprintf(out, cap, "%.3f s", s);
+}
+
+
+int cproc_threads(int32_t pid, cproc_lines_t *out)
+{
+    line_builder_t b;
+    if (lb_init(&b) != 0) return -1;
+    lb_add(&b, "TID\t线程名\t状态\tCPU\tCPU 时间（用户 / 内核）\t优先级 / 策略");
+
+    if (pid <= 0) {
+        lb_add(&b, "错误\t无效的 PID");
+        return lb_finish(&b, out);
+    }
+
+    /* ---- 1. 取线程 id 列表；缓冲区不够时翻倍重试 ---- */
+    uint64_t *ids = NULL;
+    size_t cap = 4096;                      /* 512 个 id */
+    int nbytes = 0;
+    int last_errno = 0;
+    for (;;) {
+        uint64_t *nb = realloc(ids, cap);
+        if (!nb) {
+            free(ids);
+            lb_add(&b, "错误\t内存不足，无法读取线程列表");
+            return lb_finish(&b, out);
+        }
+        ids = nb;
+        errno = 0;
+        nbytes = proc_pidinfo((int)pid, PROC_PIDLISTTHREADS, 0, ids, (int)cap);
+        last_errno = errno;
+        if (nbytes > 0 && (size_t)nbytes < cap) break;   /* 正常读完 */
+        if (nbytes <= 0 && last_errno != ENOMEM) break;  /* 权限 / 已退出 */
+        if (cap >= CPROC_THREAD_ID_MAX) break;
+        cap *= 2;
+    }
+
+    if (nbytes <= 0) {
+        lb_addf(&b, "错误\t无法枚举线程（%s）%s", strerror(last_errno),
+                (last_errno == EPERM || last_errno == EACCES)
+                    ? "；其他用户的进程需要 root（工具栏「提权」）"
+                    : "");
+        free(ids);
+        return lb_finish(&b, out);
+    }
+
+    int count = nbytes / (int)sizeof(uint64_t);
+    int shown = count > CPROC_THREAD_SHOW_MAX ? CPROC_THREAD_SHOW_MAX : count;
+    int failed = 0;
+
+    /* ---- 2. 逐个线程取 proc_threadinfo ---- */
+    for (int i = 0; i < shown; i++) {
+        if ((i & 63) == 0 && cproc_detail_aborted()) break;
+
+        struct proc_threadinfo ti;
+        memset(&ti, 0, sizeof(ti));
+        int r = proc_pidinfo((int)pid, PROC_PIDTHREADINFO, ids[i],
+                             &ti, (int)sizeof(ti));
+        if (r <= 0) {
+            failed++;
+            continue;                       /* 线程刚好退出：跳过，不刷屏 */
+        }
+
+        char name[MAXTHREADNAMESIZE + 1];
+        if (ti.pth_name[0] != '\0') {
+            strlcpy(name, ti.pth_name, sizeof(name));
+        } else {
+            snprintf(name, sizeof(name), "（未命名）");
+        }
+
+        char utime[32], stime[32];
+        thread_time_text(ti.pth_user_time, utime, sizeof(utime));
+        thread_time_text(ti.pth_system_time, stime, sizeof(stime));
+
+        /* pth_cpu_usage 是「放大 10 倍」的百分比（952 = 95.2%） */
+        double cpu = (double)ti.pth_cpu_usage / 10.0;
+        if (cpu < 0) cpu = 0;
+
+        lb_addf(&b, "0x%llx\t%s\t%s\t%.1f%%\t%s / %s\t%d / %d / %d · %s",
+                (unsigned long long)ids[i], name,
+                thread_state_name(ti.pth_run_state), cpu,
+                utime, stime,
+                ti.pth_curpri, ti.pth_priority, ti.pth_maxpriority,
+                thread_policy_name(ti.pth_policy));
+    }
+    free(ids);
+
+    /* ---- 3. 页脚提示（默认隐藏，可在偏好里打开） ----
+     * 提示必须是**静态**文案：C 层双语标记是「整字段精确匹配」，带 %d 的句子
+     * 格式化后就不在表里了，英文界面会残留中文。线程总数在「概览」页已有。 */
+    lb_hint(&b, "线程清单来自 PROC_PIDLISTTHREADS + PROC_PIDTHREADINFO（每个线程一次系统调用）");
+    if (shown < count)
+        lb_hint(&b, "线程数超过上限，仅显示前 2000 个");
+    if (failed > 0)
+        lb_addf(&b, "读取失败的线程\t%d 个（枚举与读取之间退出属正常现象）", failed);
+    lb_hint(&b, "线程名来自 pthread_setname_np；未命名的线程在系统里本来就没有名字，不是读取失败");
+    lb_hint(&b, "策略短码：TS 分时 / RR 轮转 / FIFO 实时；优先级为「当前 / 基准 / 上限」");
+    lb_hint(&b, "CPU 为单线程占用率（100% = 一个核），用户态 / 内核态是累计时间；数据来源 PROC_PIDTHREADINFO");
+
+    return lb_finish(&b, out);
+}

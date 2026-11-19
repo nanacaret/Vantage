@@ -56,6 +56,34 @@ __pycache__/
 *.tmp
 
 # ---------------------------------------------------------------------------
+# AI 编码助手的工作目录 / 本地状态（各工具的会话、缓存、配置不入库）
+#   .claude/    Claude Code          .cursor/   Cursor
+#   .codex/     Codex CLI            .gemini/   Gemini CLI
+#   .windsurf/  Windsurf             .trae/     Trae
+#   .copilot/   GitHub Copilot       .continue/ Continue
+#   .codeium/   Codeium              .roo/      Roo Code
+#   .cline/     Cline                .kilo/     Kilo Code
+#   .serena/    Serena               .workbuddy/ WorkBuddy
+#   aider 的会话/配置文件（.aider*, .aider.conf.yml）
+# ---------------------------------------------------------------------------
+.claude/
+.cursor/
+.codex/
+.gemini/
+.windsurf/
+.trae/
+.copilot/
+.continue/
+.codeium/
+.roo/
+.cline/
+.kilo/
+.serena/
+.workbuddy/
+.aider*
+.aider.conf.yml
+
+# ---------------------------------------------------------------------------
 # 本地签名与发布私钥（绝不能入库）
 # ---------------------------------------------------------------------------
 *.p12
