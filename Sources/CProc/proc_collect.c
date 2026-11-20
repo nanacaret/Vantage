@@ -501,6 +501,28 @@ int cproc_collect(cproc_system_t *out)
             }
         }
 
+        /* 把 nfiles 从「fd 表容量」修正为「当前打开的 fd 数」。
+         *
+         * pbi_nfiles 是内核 fd 表的**分配槽位数**（fd_nfiles）——高水位，
+         * 只涨不落：进程曾同时开过 ~100 个 fd、后来关到只剩 36，表容量
+         * 仍是 100。这正是 Overview（容量值）和「文件」页（PROC_PIDLISTFDS
+         * 实际枚举）数字对不上的原因。
+         *
+         * 修正办法：用 PROC_PIDLISTFDS + 真实缓冲区查一次，返回值 =
+         * 写入字节数 = 活跃 fd 数 × sizeof(proc_fdinfo)。注意**不能用
+         * NULL 缓冲区查**——实测 NULL 查询返回的也是表容量推算值
+         * （关掉全部文件后它照样不回落），拿不到活跃数。
+         *
+         * 查询失败（无权限看别的用户的进程等）就保留上面的容量值保底；
+         * 缓冲区 32KB = 最多数到 4096 个 fd，超出按 4096 截断。 */
+        {
+            char fdlist[32 * 1024];
+            int bytes = (int)proc_pidinfo(pid, PROC_PIDLISTFDS, 0,
+                                          fdlist, (int)sizeof(fdlist));
+            if (bytes > 0)
+                it->nfiles = (uint32_t)(bytes / (int)sizeof(struct proc_fdinfo));
+        }
+
         if (cproc_tty_devname(it->tty_dev, it->tty_name,
                               sizeof(it->tty_name)) != 0)
             cstr_copy(it->tty_name, sizeof(it->tty_name), "??");
