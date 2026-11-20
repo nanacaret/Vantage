@@ -17,14 +17,14 @@
 | `Packaging/Info.plist` → `NSHumanReadableCopyright` | `Copyright © 2026 nanacaret. Licensed under MIT.` |
 | README 版权行 | `© 2026 nanacaret` |
 | `Packaging/Info.plist` → `CFBundleIdentifier` | `io.github.nanacaret.Vantage`（按 GitHub 组织的反向域名惯例） |
-| `Packaging/Info.plist` → `CFBundleShortVersionString` / `CFBundleVersion` | `1.2.1` / `1.2.1` |
+| `Packaging/Info.plist` → `CFBundleShortVersionString` / `CFBundleVersion` | `1.2.2` / `1.2.2` |
 
 全仓库已无仓库地址占位符。若组织改用自有域名，可把 Bundle ID 换成对应反向域名；
 **改 ID 会让已保存的偏好、配色、列宽与窗口位置重置一次**，在已有分发产物时应先权衡。
 `Packaging/Info.plist` 的 `NSAccessibilityUsageDescription` 为中英双语文案，
 可按需本地化到 `InfoPlist.strings`。
 
-版本号目前为 `1.2.1`（`CFBundleShortVersionString` 与 `CFBundleVersion` 一致）。
+版本号目前为 `1.2.2`（`CFBundleShortVersionString` 与 `CFBundleVersion` 一致）。
 发新版时只改 `Packaging/Info.plist`，再 push 一个 `v*` tag 触发正式 Release；
 DMG 文件名里的版本号取自 tag，不需要另外配置。
 

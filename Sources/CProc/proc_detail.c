@@ -391,10 +391,13 @@ static struct proc_fdinfo *read_fds(int32_t pid, int *out_cnt)
     return fds;
 }
 
-/* xnu bsd/sys/proc_info.h 的 proc_fdtype 编号（长期稳定）：
- *   1 ATALK  2 VNODE  3 SOCKET  4 PSHM  5 PSEM  6 KQUEUE  7 PIPE
- *   8 FSEVENTS  9 NETPOLICY  10 CHANNEL  11 NEXUS
- * SDK 导出了宏就用宏，没导出的按编号兜底，最后带数值输出未知类型。 */
+/* proc_fdtype 编号是**随 SDK 变化的**！老 xnu 里是 1 ATALK / 2 VNODE /
+ * 3 SOCKET / 4 PSHM / 5 PSEM / 6 KQUEUE / 7 PIPE / 8 FSEVENTS / 9 NETPOLICY /
+ * 10 CHANNEL / 11 NEXUS；macOS 26 的 SDK 把 ATALK 改成 0，后面全部前移一位。
+ * 所以类型名一律用 SDK 宏（内核与本 SDK 一致，见下方实测推演）；下面的
+ * 纯数字兜底只在「宏没导出」时才可能走到，编号按当前 SDK 口径维护。
+ * 之前 fd_type_desc 硬编码旧编号，导致 SOCKET 行显示 VNODE 的注释、
+ * PIPE 行显示 KQUEUE 的注释——整整错一位。 */
 static const char *fd_type_name(uint32_t t)
 {
     switch (t) {
@@ -421,9 +424,10 @@ static const char *fd_type_name(uint32_t t)
 #endif
     default: break;
     }
+    /* 按 macOS 26 SDK 的编号兜底（ATALK=0，FSEVENTS=7） */
     switch (t) {
-    case 1:  return "ATALK";
-    case 8:  return "FSEVENTS";
+    case 0:  return "ATALK";
+    case 7:  return "FSEVENTS";
     case 9:  return "NETPOLICY";
     case 10: return "CHANNEL";
     case 11: return "NEXUS";
@@ -437,21 +441,32 @@ static const char *fd_type_name(uint32_t t)
 
 /* 非 vnode FD 到底代表什么内核对象，直接在列表里说清楚。
  * 之前一律写「非 vnode 描述符，详见文件监控页」，用户看到几十行
- * 一模一样的占位文字，无法判断是解析错了还是真有大量特殊 fd。 */
+ * 一模一样的占位文字，无法判断是解析错了还是真有大量特殊 fd。
+ *
+ * **必须用 SDK 宏做 case，不能硬编码数字**——编号随 SDK 变
+ * （见 fd_type_name 上方的注释），硬编码曾造成注释整体错一位。 */
 static const char *fd_type_desc(uint32_t t)
 {
     switch (t) {
-    case 1:  return "(AppleTalk 套接字，无 vnode 路径)";
-    case 2:  return "(vnode 文件，见上方 VNODE 行)";   /* 防御：正常不会走到 */
-    case 3:  return "(socket，协议/地址见「网络连接」页)";
-    case 4:  return "(POSIX 共享内存对象，无文件路径)";
-    case 5:  return "(POSIX 信号量，无文件路径)";
-    case 6:  return "(kqueue，事件监听状态见「文件监控」页)";
-    case 7:  return "(管道，对端进程见「文件监控」页)";
-    case 8:  return "(FSEvents 文件系统事件监听 fd，无 vnode 路径)";
-    case 9:  return "(网络策略 netpolicy fd，无 vnode 路径)";
-    case 10: return "(channel 描述符，无 vnode 路径)";
-    case 11: return "(Skywalk nexus 描述符，无 vnode 路径)";
+    case PROX_FDTYPE_ATALK:   return "(AppleTalk 套接字，无 vnode 路径)";
+    case PROX_FDTYPE_VNODE:   return "(vnode 文件，见上方 VNODE 行)";  /* 防御：open_files 对 vnode 走专门分支，正常不会到这里 */
+    case PROX_FDTYPE_SOCKET:  return "(socket，协议/地址见「网络连接」页)";
+    case PROX_FDTYPE_PSHM:    return "(POSIX 共享内存对象，无文件路径)";
+    case PROX_FDTYPE_PSEM:    return "(POSIX 信号量，无文件路径)";
+    case PROX_FDTYPE_KQUEUE:  return "(kqueue，事件监听状态见「文件监控」页)";
+    case PROX_FDTYPE_PIPE:    return "(管道，对端进程见「文件监控」页)";
+#ifdef PROX_FDTYPE_FSEVENTS
+    case PROX_FDTYPE_FSEVENTS:  return "(FSEvents 文件系统事件监听 fd，无 vnode 路径)";
+#endif
+#ifdef PROX_FDTYPE_NETPOLICY
+    case PROX_FDTYPE_NETPOLICY: return "(网络策略 netpolicy fd，无 vnode 路径)";
+#endif
+#ifdef PROX_FDTYPE_CHANNEL
+    case PROX_FDTYPE_CHANNEL:   return "(channel 描述符，无 vnode 路径)";
+#endif
+#ifdef PROX_FDTYPE_NEXUS
+    case PROX_FDTYPE_NEXUS:     return "(Skywalk nexus 描述符，无 vnode 路径)";
+#endif
     default: return "(内核新增 FD 类型，无 vnode 路径)";
     }
 }
