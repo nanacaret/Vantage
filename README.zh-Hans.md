@@ -38,26 +38,30 @@ Vantage 两者都不需要，且只是一个**可本地构建的单个 `.app`**�
 | 模块 | 内容 |
 |---|---|
 | 进程列表 | 树形 / 扁平、14 列三态排序、0.5–5 秒刷新、过滤、正则搜索、本地化名 + 原始可执行名、可选显示与 bin 不同的 argv[0] 调用名、已退出进程高亮 |
-| 检查器 | 14 个页签：概览、文件、环境、镜像、网络、监控、Pipe 对端、内存映射、TTY、线程、窗口、签名、Mach、命令；每页可独立过滤（过滤框默认收起，⌘F 唤出并聚焦），路径格右键「在 Finder 中显示」/「复制路径」 |
+| 检查器 | 15 个页签：概览、文件、环境、镜像、网络、监控、Pipe 对端、内存映射、TTY、线程、窗口、签名、权限、Mach、命令；每页可独立过滤（过滤框默认收起，⌘F 唤出并聚焦），路径格右键「在 Finder 中显示」/「复制路径」 |
 | 信号 | 右键菜单 / 主菜单，31 个 Darwin 信号可配置显示（默认 12 个）、确认策略、暂停继续、`sample` 采样 |
-| 性能监控（⌘P） | CPU/GPU/ANE/DRAM 功耗、整机功率（SMC `PSTR`）、CPU/GPU 温度、P-state residency 分簇频率、磁盘与网络吞吐、逐通道诊断 |
+| 性能监控（⌘⌥M） | CPU/GPU/ANE/DRAM 功耗、整机功率（SMC `PSTR`）、CPU/GPU 温度、P-state residency 分簇频率、磁盘与网络吞吐、逐通道诊断 |
 | 全局搜索（⌘⇧F） | 先冻结进程快照，再对所有进程逐页取样；结果可跳回对应页签与行 |
 | 设备树（⌘⌥B） | IORegistry 7 个 plane、驱动 Bundle、client PID、完整属性表 |
 | 系统扩展（⌘⌥E） | `.kext` / `.dext` / `.systemextension` / `.appex` 清单、加载状态、`IOKitPersonalities`、Team ID |
 | 窗口工具 | 准星定位进程（⌘⌥L）、全局窗口列表、双击激活具体窗口、双击 PID 跨进程/跨页跳转 |
+| 启动项（⌘⌥J） | 列出整台机器的 launchd 任务：`/System`、`/Library` 与各用户 `~/Library` 下的 LaunchDaemons / LaunchAgents，以及旧式 StartupItems。列为作用域、名称、类型、程序、触发条件（`RunAtLoad` / `KeepAlive` / `StartInterval` …）、实时状态（运行中并带 PID、已加载、已禁用、未加载）与路径。选中一行会在下方显示该条目完整的 plist：`ProgramArguments` 逐条展开、`KeepAlive` 条件、Mach 服务名、运行身份、日志路径等，一眼能看出它到底做什么；右键第三方条目可加载 / 卸载 / 启用 / 禁用（需要 root 时走系统授权）；Apple 自带条目保持只读 |
+| 系统信息（⌘⌥I） | 主机名、型号、芯片、物理内存、macOS / 内核版本、运行时间；SIP 活动配置位图直接读内核（`csr_get_active_config`，失败时探测文件标志），逐项列出文件系统保护、调试限制、`task_for_pid` |
 | 网络（⌘⌥N） | 系统网卡（ifconfig 口径：状态 / 标志 / MTU / MAC / IPv4 / IPv6）+ 每张网卡的地址表、系统路由表（route / netstat 口径）；可 up/down、改 MTU、增删 IPv4/IPv6 地址、增删路由与默认路由 |
-| 提权 | 工具栏「提权」以 root 重启（Authorization Services，系统授权对话框，不用 sudo）；权限不足时顶部内联提示 + 一键提权，不弹窗 |
+| 提权 | 工具栏「提权」以 root 重启（Authorization Services，系统授权对话框，不用 sudo）；权限不足时顶部内联提示 + 一键提权，不弹窗。左下角的锁与系统工具一致：点一下预先授权（之后特权操作不再询问），再点一下吊销；从普通用户提权上来的 root 实例提供「降权为用户」（`setgid` / `initgroups` / `setuid`） |
+| Touch ID 提权（可选） | 默认关闭。开启时安装一个 root LaunchDaemon 辅助工具（需输一次密码），之后提权改为指纹确认。助手只接受「当前桌面登录的**管理员**用户 + 代码签名 cdhash 与自身完全一致」的调用方（非管理员、非桌面用户一律拒绝，防止借助手提权），且只执行白名单工具（`ifconfig` / `route` / `launchctl`）与本 App 的隐藏 `--tcc-write` 模式；关掉开关即 bootout 并删除 |
 | MCP 服务 | 独立可执行 `vantage-mcp`（stdio JSON-RPC）：列进程、读详情页、发信号、网卡与路由、系统总览，Claude Desktop / Cursor 可直接接入，不要求 GUI 在跑 |
 | AppleScript | `Resources/Vantage.sdef`：`list processes`、`process info`、`quit process`、`list interfaces`、`list routes` |
 | 已退出进程 | 宽限期内双击/右键仍可打开检查器：概览与命令页回放退出前快照，惰性页只回放「退出前采过的」数据 |
 | 线程页 | 逐个线程列出 TID / 名称 / 状态 / CPU / 用户态与内核态时间 / 优先级与调度策略（PROC_PIDLISTTHREADS + PROC_PIDTHREADINFO），切换到该页才采集 |
-| 定制 | ⌘, 偏好：采集上限、缓存 TTL、刷新间隔、默认视图、信号、11 项配色 + 5 组预设；深色模式、中英切换、⌘C 复制行、⌘/⌥+单击 |
+| 权限页 | 一张表汇总三类信息：签名里的 entitlements、用户级与系统级 TCC.db 的授权（以 enabled / disabled 呈现状态，附原因与修改时间；读取需要「完全磁盘访问」）、SIP 与 task port 能力。SIP 文件系统保护关闭时，右键 TCC 行可直接授予 / 撤销（经 Authorization Services 以 root 写库）；能拿到 task port 时追加任务级内存 / CPU / 调度策略 |
+| 定制 | ⌘, 偏好：七个页签（通用 / 界面 / 数据与缓存 / 搜索 / 提权 / 颜色 / 信号），采集上限、缓存 TTL、刷新间隔、默认视图、信号、11 项配色 + 5 组预设；检查器与设置页的页签条可切「自动折行 / 每行固定 N 个 / 左侧竖排（可滚动）」；深色模式、中英切换（切换后自动重启一次以彻底生效）、⌘C 复制行、⌘/⌥+单击 |
 
 完整功能矩阵与数据来源见 [实现笔记](docs/IMPLEMENTATION.md)。
 
 ## 界面预览
 
-### 性能监控（⌘P）
+### 性能监控（⌘⌥M）
 
 ![性能监控窗口 —— Apple M5 功耗、温度、频率与逐通道诊断](docs/screenshots/performance.png)
 

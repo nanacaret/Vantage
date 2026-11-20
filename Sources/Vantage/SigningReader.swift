@@ -8,6 +8,48 @@ struct SigningInfo {
 
 enum SigningReader {
 
+    /// 代码签名信息字典（Security.framework 的 kSecCodeInfo* 键）。
+    /// 「签名」页与「权限」页共用，避免两处各写一遍 guest → static → info。
+    static func signingInformation(pid: Int32, path: String) -> [String: Any]? {
+        var staticCode: SecStaticCode?
+
+        // 优先按 pid 取运行中的 code；拿不到（其他用户的进程、已退出）时
+        // 退回按可执行文件路径读静态签名 —— 读磁盘不需要 task port。
+        var guest: SecCode?
+        let attrs: [String: Any] = [
+            kSecGuestAttributePid as String: NSNumber(value: pid)
+        ]
+        if SecCodeCopyGuestWithAttributes(nil, attrs as CFDictionary, [], &guest)
+                == errSecSuccess, let code = guest {
+            if SecCodeCopyStaticCode(code, [], &staticCode) != errSecSuccess {
+                staticCode = nil
+            }
+        }
+        if staticCode == nil, !path.isEmpty {
+            SecStaticCodeCreateWithPath(URL(fileURLWithPath: path) as CFURL,
+                                        [], &staticCode)
+        }
+        guard let target = staticCode else { return nil }
+
+        var info: CFDictionary?
+        let flags = SecCSFlags(rawValue: kSecCSSigningInformation)
+        guard SecCodeCopySigningInformation(target, flags, &info) == errSecSuccess,
+              let dict = info as? [String: Any] else { return nil }
+        return dict
+    }
+
+    /// 已声明的 entitlements（未签名 / 无 entitlement 时返回 nil）
+    static func entitlements(pid: Int32, path: String) -> [String: Any]? {
+        guard let dict = signingInformation(pid: pid, path: path) else { return nil }
+        return dict[kSecCodeInfoEntitlementsDict as String] as? [String: Any]
+    }
+
+    /// 签名标识符；未签名时可能等于路径或 nil
+    static func signingIdentifier(pid: Int32, path: String) -> String? {
+        guard let dict = signingInformation(pid: pid, path: path) else { return nil }
+        return dict[kSecCodeInfoIdentifier as String] as? String
+    }
+
     static func read(pid: Int32, path: String) -> SigningInfo {
         var rows: [(String, String)] = []
 

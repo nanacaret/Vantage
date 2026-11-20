@@ -60,8 +60,45 @@ final class DetailTableViewController: NSViewController,
     /// 参数：(可见行号, 真实列号, 该行全部列值)
     var doubleClickHandler: ((Int, Int, [String]) -> Bool)?
 
+    /// 追加自定义右键菜单项（「权限」页用它放 TCC 授予 / 撤销）。
+    /// 入参是右键命中的整行；返回空数组表示不加任何项。
+    var extraMenuItems: (([String]) -> [NSMenuItem])?
+
+    /// 列宽归一化的目标总宽。详情页默认 820（下部详情区约 860pt）；
+    /// 独立窗口（启动项 1180pt）可以调大，否则右侧会留一大片空白。
+    var widthTarget: CGFloat = 820
+
+    /// 该页专用的列宽权重；nil 时按表头语义自动推断。
+    /// 「权限」页的表头（类别 / 权限 / 状态 / 详情 / 来源）在通用推断里
+    /// 都落到默认权重，状态列会被压到放不下 "未请求 (not requested)"。
+    var columnWeights: [CGFloat]?
+
+    /// 选中行变化（该行全部列值）。「启动项」窗口用它刷新详情面板。
+    var selectionHandler: (([String]) -> Void)?
+
     /// 由宿主设置表格 tooltip（例如「文件」页说明双击跳转规则）
     func setToolTip(_ text: String) { table.toolTip = text }
+
+    /// 当前选中行（无选中时 nil）
+    var selectedRowValues: [String]? {
+        let i = table.selectedRow
+        guard i >= 0, i < visibleRows.count else { return nil }
+        return visibleRows[i]
+    }
+
+    /// 以代码选中第 n 个可见行（用于刷新后恢复选中）
+    func selectVisibleRow(_ index: Int) {
+        guard index >= 0, index < visibleRows.count else { return }
+        table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+        table.scrollRowToVisible(index)
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        guard let handler = selectionHandler, let row = selectedRowValues else {
+            return
+        }
+        handler(row)
+    }
 
     /// 以代码方式设置过滤框内容（供跨页定位时清空 / 兜底过滤）
     func applyFilter(_ text: String) {
@@ -326,6 +363,14 @@ final class DetailTableViewController: NSViewController,
 
         contextMenu.addItem(.separator())
         add(L("gs.menuCopyRow"), #selector(menuCopyRow))
+
+        if let extra = extraMenuItems {
+            let items = extra(row)
+            if !items.isEmpty {
+                contextMenu.addItem(.separator())
+                for item in items { contextMenu.addItem(item) }
+            }
+        }
     }
 
     /// 从这一行里挑出最可信的路径，见上面的三步顺序。
@@ -417,20 +462,24 @@ final class DetailTableViewController: NSViewController,
     /// 旧实现是「除末列外一律 170、末列 420」：Pipe 对端 7 列合计
     /// 1440pt、网络连接 6 列 1270pt，都要大幅横向滚动才能看到后半列。
     private func defaultWidths() -> [CGFloat] {
-        // 「项目 + 值」这类两列页保持原比例：值列要放完整命令行 / 长路径。
+        // 「项目 + 值」这类两列页：值列要放完整命令行 / 长路径，所以按目标
+        // 总宽给出 1:4 —— 独立窗口把 widthTarget 调大后能铺满，不再留白。
         if columnCount <= 2 {
-            return columnCount == 1 ? [420] : [170, 420]
+            if columnCount == 1 { return [widthTarget] }
+            let first = max(120, (widthTarget * 0.2).rounded())
+            return [first, widthTarget - first]
         }
         let raw: [CGFloat] = (0..<columnCount).map { i in
+            if let w = columnWeights, w.count == columnCount { return w[i] }
             let title = i < headers.count ? headers[i] : ""
             return Self.suggestedWidth(forHeader: title)
         }
         let total = max(raw.reduce(0, +), 1)
-        let k = Self.detailWidthTarget / total
+        let k = widthTarget / total
         var out = raw.map { min(300, max(60, $0 * k)) }
         let sum = out.reduce(0, +)
-        if sum > Self.detailWidthTarget {
-            let k2 = Self.detailWidthTarget / sum
+        if sum > widthTarget {
+            let k2 = widthTarget / sum
             out = out.map { max(55, $0 * k2) }
         }
         return out
@@ -449,10 +498,11 @@ final class DetailTableViewController: NSViewController,
         // 先命中 short 的 "Size" 会把整列压到 84pt。
         let long = ["路径", "命令", "值", "说明", "标题", "镜像", "映射",
                     "地址", "补充", "变量", "位置", "尺寸", "共享",
-                    "Alpha", "进程", "时间",
+                    "Alpha", "进程", "时间", "权限", "详情",
                     "Path", "Command", "Value", "Description", "Title",
                     "Images", "Mapping", "Address", "Extra", "Variable",
-                    "Position", "Sharing", "Process", "Time", "Start"]
+                    "Position", "Sharing", "Process", "Time", "Start",
+                    "Permission", "Details"]
         if long.contains(where: { title.contains($0) }) { return 190 }
         if short.contains(where: { title.contains($0) }) { return 84 }
         return 120
@@ -521,7 +571,10 @@ final class DetailTableViewController: NSViewController,
         cell.configure(value,
                        color: linked ? AppColors.shared.color(.pidLink)
                             : (idx == 0 ? .secondaryLabelColor : .labelColor))
-        cell.toolTip = linked ? L("detail.doubleClickToOpenThe") : nil
+        // 列宽有限时长文本会被截断（「权限」页的详情列尤其明显）；
+        // 悬停显示完整内容，双击跳转的提示优先。
+        cell.toolTip = linked ? L("detail.doubleClickToOpenThe")
+                              : (value.isEmpty ? nil : value)
         return cell
     }
 
@@ -907,7 +960,7 @@ extension CommandLineViewController: RowTextCopying {}
 /// 窗口页」这种错位。顺序只在这里定义，其余地方一律用 `DetailTab(rawValue:)`。
 enum DetailTab: Int, CaseIterable {
     case overview, files, env, dylibs, sockets, monitoring, pipePeers, regions
-    case tty, threads, windows, signing, mach, command
+    case tty, threads, windows, signing, permissions, mach, command
 
     /// 需要独立采集的页（概览用主表快照、命令页是纯文本）
     static var collectable: [DetailTab] {
@@ -921,245 +974,29 @@ fileprivate func detailTabTitle(_ key: String) -> String {
     key.hasPrefix("=") ? String(key.dropFirst()) : L(key)
 }
 
-/// 多行页签条。
-///
-/// NSTabViewController 自带的 segmented control 只有一行，14 个页签在
-/// 窄窗口下会被截断。这里把页签拆成多行，每行一个 NSSegmentedControl，
-/// 两种排布：
-///   · 自动（偏好设为 0，默认）：按每个标题的实际文字宽度贪心换行，
-///     段宽 = 文字宽 + 内边距，行内不再拉伸，所以每行个数可以不同，
-///     窄窗口下会自动折行、宽窗口下自动并回一行，右侧没有大片空白。
-///   · 固定（2…14）：每行固定个数、等宽等分，行数 = ceil(n / perRow)，
-///     沿用原来的行为。
-/// 自动模式要在宽度变化时重排，所以重排放在 layout() 里，用 packedWidth
-/// 去重，避免约束更新触发的下一次 layout 又重建一遍。
-final class DetailTabBarView: NSView {
-    var onSelect: ((Int) -> Void)?
-
-    private(set) var selectedIndex = 0
-    private let stack = NSStackView()
-    private var rows: [NSSegmentedControl] = []
-    private var titles: [String] = []
-    /// 0 = 自动换行；>0 = 每行固定个数
-    private var perRow = 0
-    private var heightConstraint: NSLayoutConstraint!
-    /// 上一次自动换行时使用的可用宽度；只有宽度真的变了才重排
-    private var packedWidth: CGFloat = -1
-    private var isRebuilding = false
-
-    private static let rowHeight: CGFloat = 22
-    private static let rowSpacing: CGFloat = 4
-    /// 段宽 = 文字宽 + 该常量（NSSegmentedControl .small 的左右内边距与
-    /// 分隔线，实测 ≈18.5，取 20 留一点余量避免末尾字母被切）
-    private static let segmentPadding: CGFloat = 20
-    private static let labelFont = NSFont.systemFont(ofSize: 11)
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        stack.orientation = .vertical
-        stack.spacing = Self.rowSpacing
-        stack.alignment = .centerX
-        stack.distribution = .fill
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
-            stack.topAnchor.constraint(equalTo: topAnchor),
-            stack.bottomAnchor.constraint(equalTo: bottomAnchor),
-        ])
-        heightConstraint = heightAnchor.constraint(equalToConstant: Self.rowHeight)
-        heightConstraint.isActive = true
-    }
-
-    required init?(coder: NSCoder) { return nil }
-
-    func configure(titles: [String], perRow: Int) {
-        self.titles = titles
-        self.perRow = max(0, perRow)
-        // 标题或模式变了：强制按当前宽度重新排一次
-        packedWidth = -1
-        rebuildRows(available: bounds.width)
-        syncSelection()
-    }
-
-    func select(_ index: Int) {
-        selectedIndex = index
-        syncSelection()
-    }
-
-    // -----------------------------------------------------------------
-    // 重排
-    // -----------------------------------------------------------------
-
-    private func rebuildRows(available: CGFloat) {
-        guard !isRebuilding else { return }
-        isRebuilding = true
-        defer { isRebuilding = false }
-
-        for v in stack.arrangedSubviews {
-            stack.removeArrangedSubview(v)
-            v.removeFromSuperview()
-        }
-        rows.removeAll()
-
-        // 固定模式每行等宽铺满（居中对齐即可）；自动模式行宽随内容，
-        // 左对齐才不会每行都缩在中间。
-        stack.alignment = perRow > 0 ? .centerX : .leading
-
-        let groups = rowGroups(available: available)
-
-        for group in groups {
-            guard let first = group.first else { continue }
-            let seg = NSSegmentedControl(
-                labels: group.map { titles[$0] },
-                trackingMode: .selectOne,
-                target: self,
-                action: #selector(segmentClicked(_:)))
-            // tag 记录本行第一项在全局数组里的下标
-            seg.tag = first
-            seg.controlSize = .small
-            seg.font = Self.labelFont
-            seg.translatesAutoresizingMaskIntoConstraints = false
-            seg.heightAnchor.constraint(equalToConstant: Self.rowHeight).isActive = true
-            seg.toolTip = rowTooltip(group)
-
-            if perRow > 0 {
-                // 固定模式：每行等宽铺满，和旧行为一致
-                seg.segmentDistribution = .fillEqually
-                seg.setContentHuggingPriority(.defaultLow, for: .horizontal)
-                stack.addArrangedSubview(seg)
-                seg.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-            } else {
-                // 自动模式：段宽按文字长度显式指定，控件不再被拉伸
-                seg.segmentDistribution = .fill
-                let limit = max(available, 80)
-                for (i, idx) in group.enumerated() {
-                    let w = min(Self.segmentWidth(for: titles[idx]), limit)
-                    seg.setWidth(w, forSegment: i)
-                }
-                seg.setContentHuggingPriority(.required, for: .horizontal)
-                seg.setContentCompressionResistancePriority(.required,
-                                                            for: .horizontal)
-                stack.addArrangedSubview(seg)
-            }
-            rows.append(seg)
-        }
-
-        let n = CGFloat(rows.count)
-        heightConstraint.constant = n * Self.rowHeight
-            + max(0, n - 1) * Self.rowSpacing
-        syncSelection()
-    }
-
-    private func rowGroups(available: CGFloat) -> [[Int]] {
-        guard !titles.isEmpty else { return [] }
-        if perRow > 0 {
-            var out: [[Int]] = []
-            var start = 0
-            while start < titles.count {
-                let end = min(start + perRow, titles.count)
-                out.append(Array(start..<end))
-                start = end
-            }
-            return out
-        }
-        return Self.pack(titles: titles, available: max(available, 120))
-    }
-
-    /// 自动模式折行：先贪心算出最少要几行，再把总宽度尽量平均到各行，
-    /// 避免出现「第一行塞满 + 第二行只有一个页签」的孤行。
-    private static func pack(titles: [String], available: CGFloat) -> [[Int]] {
-        let widths = titles.map { min(segmentWidth(for: $0), available) }
-        let greedy = pack(widths: widths, limit: available)
-        guard greedy.count > 1 else { return greedy }
-
-        // 二分「单行宽度上限」：行数不变的前提下取最小的上限，
-        // 各行宽度就趋于一致（页签仍按原顺序，个数可以不同）。
-        var lo = widths.max() ?? 0
-        var hi = available
-        for _ in 0..<10 {
-            let mid = (lo + hi) / 2
-            if pack(widths: widths, limit: mid).count <= greedy.count {
-                hi = mid
-            } else {
-                lo = mid
-            }
-        }
-        return pack(widths: widths, limit: hi)
-    }
-
-    /// 按「单行最大宽度」贪心切行
-    private static func pack(widths: [CGFloat], limit: CGFloat) -> [[Int]] {
-        var out: [[Int]] = []
-        var current: [Int] = []
-        var used: CGFloat = 0
-        for (i, w) in widths.enumerated() {
-            // +1 是段与段之间的分隔线
-            if !current.isEmpty, used + w + 1 > limit {
-                out.append(current)
-                current = []
-                used = 0
-            }
-            current.append(i)
-            used += w + 1
-        }
-        if !current.isEmpty { out.append(current) }
-        return out
-    }
-
-    private static func segmentWidth(for title: String) -> CGFloat {
-        let w = (title as NSString)
-            .size(withAttributes: [.font: labelFont]).width
-        return ceil(w) + segmentPadding
-    }
-
-    // -----------------------------------------------------------------
-    // 宽度变化 → 自动模式重排
-    // -----------------------------------------------------------------
-
-    override func layout() {
-        super.layout()
-        guard perRow == 0, bounds.width > 0 else { return }
-        guard abs(bounds.width - packedWidth) > 0.5 else { return }
-        packedWidth = bounds.width
-        rebuildRows(available: bounds.width)
-    }
-
-    private func syncSelection() {
-        for seg in rows {
-            let offset = selectedIndex - seg.tag
-            seg.selectedSegment = (offset >= 0 && offset < seg.segmentCount)
-                ? offset : -1
-        }
-    }
-
-    @objc private func segmentClicked(_ sender: NSSegmentedControl) {
-        let index = sender.tag + sender.selectedSegment
-        guard index >= 0, index < titles.count else { return }
-        selectedIndex = index
-        syncSelection()
-        onSelect?(index)
-    }
-}
-
-private extension DetailTabBarView {
-    /// 本行所有页签标题，用于 tooltip
-    func rowTooltip(_ group: [Int]) -> String {
-        group.compactMap { titles[safe: $0] }.joined(separator: " · ")
-    }
-}
-/// 详情页签容器：上部是多行页签条，下部是 NSTabViewController 的内容。
+/// 详情页签容器：页签条 + NSTabViewController 的内容。
 ///
 /// 必须包一层：NSTabViewController 的 `view` 就是它管理的 NSTabView，
 /// 不能直接往里塞自定义页签条。这里让它以 `.unspecified` 样式运行
-/// （不画系统页签），由外面的 DetailTabBarView 驱动
+/// （不画系统页签），由外面的 `TabStripView` 驱动
 /// `selectedTabViewItemIndex`，选中变化仍走原来的 didSelect /
 /// syncTabSelection 路径，惰性加载逻辑不受影响。
+///
+/// 页签条的位置由偏好决定（见 `TabBarStyle`）：横向时在内容上方折行，
+/// 纵向时在内容左侧、可滚动；两种布局用两套约束切换。
 final class DetailTabPaneController: NSViewController {
     let tabs: DetailTabViewController
-    private let bar = DetailTabBarView()
+    private let bar = TabStripView()
+    private let divider = NSBox()
     private var observers: [NSObjectProtocol] = []
+    private var horizontalConstraints: [NSLayoutConstraint] = []
+    private var verticalConstraints: [NSLayoutConstraint] = []
+    private var barWidth: NSLayoutConstraint?
+    /// 上一次实际套用的「标题 + 排布」，用于跳过无意义的重建：
+    /// `.preferencesDidChange` 会随每个复选框触发，重建 15 个分段控件
+    /// 纯属浪费，还会把键盘焦点从页签条上挪走。
+    private var appliedTitles: [String] = []
+    private var appliedMode: TabStripView.Mode?
 
     init(tabs: DetailTabViewController) {
         self.tabs = tabs
@@ -1169,7 +1006,13 @@ final class DetailTabPaneController: NSViewController {
     required init?(coder: NSCoder) { return nil }
 
     override func loadView() {
-        view = NSView()
+        let root = NSView()
+        // 页签条本身没有内在高度（横向靠 heightConstraint，纵向靠容器），
+        // 内容视图也没有：不给下限时，窗口按 fittingSize 会缩成
+        //「标题栏 + 一行页签」那么高（Left 布局实测只剩 52pt）。
+        root.heightAnchor.constraint(greaterThanOrEqualToConstant: 260).isActive = true
+        root.widthAnchor.constraint(greaterThanOrEqualToConstant: 360).isActive = true
+        view = root
     }
 
     override func viewDidLoad() {
@@ -1179,19 +1022,14 @@ final class DetailTabPaneController: NSViewController {
         let content = tabs.view
         content.translatesAutoresizingMaskIntoConstraints = false
         bar.translatesAutoresizingMaskIntoConstraints = false
+
+        divider.boxType = .separator
+        divider.translatesAutoresizingMaskIntoConstraints = false
+        divider.isHidden = true
+
         view.addSubview(bar)
+        view.addSubview(divider)
         view.addSubview(content)
-
-        NSLayoutConstraint.activate([
-            bar.topAnchor.constraint(equalTo: view.topAnchor, constant: 6),
-            bar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
-            bar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
-
-            content.topAnchor.constraint(equalTo: bar.bottomAnchor, constant: 6),
-            content.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            content.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            content.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-        ])
 
         bar.onSelect = { [weak self] index in
             self?.tabs.select(tab: index)
@@ -1200,16 +1038,16 @@ final class DetailTabPaneController: NSViewController {
             self?.bar.select(index)
         }
 
-        rebuild()
+        applyLayout()
 
-        // 每行上限改动 / 语言切换后重建页签条
+        // 排布样式 / 每行个数改动、语言切换后都要重排（标题宽度会变）
         observers.append(NotificationCenter.default.addObserver(
             forName: .preferencesDidChange, object: nil, queue: .main) {
-                [weak self] _ in self?.rebuild()
+                [weak self] _ in self?.applyLayout()
         })
         observers.append(NotificationCenter.default.addObserver(
             forName: .languageDidChange, object: nil, queue: .main) {
-                [weak self] _ in self?.relocalizeTabs()
+                [weak self] _ in self?.applyLayout()
         })
     }
 
@@ -1217,22 +1055,84 @@ final class DetailTabPaneController: NSViewController {
         for o in observers { NotificationCenter.default.removeObserver(o) }
     }
 
-    private func rebuild() {
-        bar.select(tabs.selectedTabViewItemIndex)
-        bar.configure(titles: tabs.tabViewItems.map { $0.label },
-                      perRow: Preferences.shared.detailTabsPerRow)
+    /// 页签标题始终从 l10n key 现取：`tabViewItems` 的 label 是建页时
+    /// 按当时语言写死的，语言切换后就地转换容易和实际译文不一致。
+    private func tabTitles() -> [String] {
+        let keys = tabs.tabTitleKeys
+        if keys.count == tabs.tabViewItems.count {
+            return keys.map { detailTabTitle($0) }
+        }
+        return tabs.tabViewItems.map { $0.label }
     }
 
-    /// 页签文字是启动时按当时语言建好的；切换语言后就地转换并重建。
-    private func relocalizeTabs() {
-        let keys = tabs.tabTitleKeys
-        // 只在数量对齐时按 key 重取；万一将来插页忘了同步，就保持原文案
-        if keys.count == tabs.tabViewItems.count {
-            for (i, item) in tabs.tabViewItems.enumerated() {
-                item.label = detailTabTitle(keys[i])
-            }
+    /// 在「横向多行」与「左侧竖排」两套约束之间切换。
+    ///
+    /// 两套约束不能同时存在：横向时内容在页签条下面，纵向时内容在右边。
+    /// 每次切换先把旧的整组 deactivate，再激活新的，避免约束互相打架。
+    private func applyLayout() {
+        guard isViewLoaded else { return }
+        let mode = Preferences.shared.tabStripMode
+        let titles = tabTitles()
+        if mode == appliedMode, titles == appliedTitles {
+            bar.select(tabs.selectedTabViewItemIndex)
+            return
         }
-        rebuild()
+        appliedMode = mode
+        appliedTitles = titles
+        NSLayoutConstraint.deactivate(horizontalConstraints)
+        NSLayoutConstraint.deactivate(verticalConstraints)
+        barWidth?.isActive = false
+        barWidth = nil
+
+        bar.configure(titles: titles, mode: mode)
+        bar.select(tabs.selectedTabViewItemIndex)
+        let content = tabs.view
+
+        switch mode {
+        case .vertical:
+            divider.isHidden = false
+            let w = bar.widthAnchor.constraint(equalToConstant: bar.columnWidth)
+            barWidth = w
+            verticalConstraints = [
+                bar.topAnchor.constraint(equalTo: view.topAnchor, constant: 6),
+                bar.leadingAnchor.constraint(equalTo: view.leadingAnchor,
+                                             constant: 8),
+                bar.bottomAnchor.constraint(equalTo: view.bottomAnchor,
+                                            constant: -6),
+                w,
+
+                divider.leadingAnchor.constraint(equalTo: bar.trailingAnchor,
+                                                 constant: 4),
+                divider.topAnchor.constraint(equalTo: view.topAnchor, constant: 8),
+                divider.bottomAnchor.constraint(equalTo: view.bottomAnchor,
+                                                constant: -8),
+                divider.widthAnchor.constraint(equalToConstant: 1),
+
+                content.topAnchor.constraint(equalTo: view.topAnchor),
+                content.leadingAnchor.constraint(equalTo: divider.trailingAnchor,
+                                                 constant: 4),
+                content.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                content.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            ]
+            NSLayoutConstraint.activate(verticalConstraints)
+
+        case .horizontal:
+            divider.isHidden = true
+            horizontalConstraints = [
+                bar.topAnchor.constraint(equalTo: view.topAnchor, constant: 6),
+                bar.leadingAnchor.constraint(equalTo: view.leadingAnchor,
+                                             constant: 8),
+                bar.trailingAnchor.constraint(equalTo: view.trailingAnchor,
+                                              constant: -8),
+
+                content.topAnchor.constraint(equalTo: bar.bottomAnchor,
+                                             constant: 6),
+                content.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                content.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                content.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            ]
+            NSLayoutConstraint.activate(horizontalConstraints)
+        }
     }
 }
 
@@ -1252,6 +1152,7 @@ final class DetailTabViewController: NSTabViewController {
     private let sockets = DetailTableViewController()
     private let monitoring = DetailTableViewController()
     private let signing = DetailTableViewController()
+    private let permissions = DetailTableViewController()
     private let mach = DetailTableViewController()
     private let command = CommandLineViewController()
     private let regions = DetailTableViewController()
@@ -1355,7 +1256,7 @@ final class DetailTabViewController: NSTabViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
 
-        // 14 个页签，全部对应「不需要 task port」或已有降级的采集能力。
+        // 15 个页签，全部对应「不需要 task port」或已有降级的采集能力。
         // 标签统一压到 2 个字，避免 segmented control 在窄窗口下把文字截没。
         // 注意：顺序与 items(for:) / applyLines 的 index 一一对应，插入新页时
         // 必须同步改这两处的 case 编号。
@@ -1372,6 +1273,7 @@ final class DetailTabViewController: NSTabViewController {
             ("detail.threadsTab", "threads",  threads),
             ("detail.window",   "windows",    windows),
             ("detail.signing",   "signing",    signing),
+            ("detail.permissions", "permissions", permissions),
             ("=Mach",   "mach",       mach),
             ("detail.command",   "command",    command),
         ]
@@ -1405,6 +1307,13 @@ final class DetailTabViewController: NSTabViewController {
             L("detail.doubleClickAWindowRow"))
         windows.doubleClickHandler = { [weak self] _, _, row in
             self?.activateWindowFromDetail(row) ?? false
+        }
+
+        // 「权限」页：TCC 行右键可授予 / 撤销（仅在 SIP 文件系统保护关闭时）
+        permissions.setToolTip(L("perm.tooltip"))
+        permissions.columnWeights = [80, 170, 160, 225, 175]
+        permissions.extraMenuItems = { [weak self] row in
+            self?.permissionMenuItems(for: row) ?? []
         }
 
         // 只观察 NSTabView 自己发出的选中通知，不碰 tabView.delegate
@@ -1563,6 +1472,7 @@ final class DetailTabViewController: NSTabViewController {
         case .threads:      return threads
         case .windows:      return windows
         case .signing:      return signing
+        case .permissions:  return permissions
         case .mach:         return mach
         case .overview, .command, .none: return nil   // 文本视图，没有行可选
         }
@@ -1636,6 +1546,13 @@ final class DetailTabViewController: NSTabViewController {
         case .signing:
             return [Item(key: "signing") {
                 .pairs(SigningReader.read(pid: pid, path: path).rows)
+            }]
+        case .permissions:
+            return [Item(key: "permissions") {
+                // entitlements / TCC.db / SIP / task port 全部在 Swift 侧采集，
+                // 中文文案直接走 L()，不需要 C 层的双语标记表。
+                .lines(PermissionReader.lines(
+                    PermissionReader.report(pid: pid, path: path)))
             }]
         case .mach:
             return [lineItem("mach",       .machSecurity, pid: pid)]
@@ -1800,7 +1717,7 @@ final class DetailTabViewController: NSTabViewController {
 
     private func clearStalePages() {
         for vc in [files, env, dylibs, sockets, monitoring, mach,
-                   regions, pipePeers, tty, threads, windows] {
+                   regions, pipePeers, tty, threads, windows, permissions] {
             vc.showPlaceholder(L("detail.loadedWhenThisTabIs"))
         }
         signing.showPlaceholder(L("detail.loadedWhenThisTabIs2"))
@@ -1819,6 +1736,7 @@ final class DetailTabViewController: NSTabViewController {
         case "windows":    windows.showPlaceholder(L("detail.enumeratingThisProcessSWindows"))
         case "mach":       mach.showPlaceholder(L("detail.readingMachSigningFlags"))
         case "signing":    signing.showPlaceholder(L("detail.verifyingCodeSignature"))
+        case "permissions": permissions.showPlaceholder(L("perm.loading"))
         default: break
         }
     }
@@ -1877,6 +1795,13 @@ final class DetailTabViewController: NSTabViewController {
                 headers: ["TID", L("detail.threadName"), L("detail.status"),
                           "CPU", L("detail.cpuTimeUserSystem"),
                           L("detail.priorityPolicy")])
+        case "permissions":
+            // 字段已经是当前语言的成品，不能再走 parse() 的字段本地化
+            permissions.setRows(
+                lines.map { $0.components(separatedBy: "\t") },
+                headers: [L("perm.colCategory"), L("perm.colPermission"),
+                          L("perm.colState"), L("perm.colDetail"),
+                          L("perm.colSource")])
         case "windows":
             windows.setRows(
                 parse(lines, titles: ["窗口号", "标题", "层",
@@ -1928,11 +1853,158 @@ final class DetailTabViewController: NSTabViewController {
         pendingLocate = nil
         overview.setSnapshot(nil, port: nil)
         for vc in [files, env, dylibs, sockets, monitoring, mach,
-                   regions, pipePeers, tty, windows] {
+                   regions, pipePeers, tty, windows, permissions] {
             vc.showPlaceholder(L("detail.noProcessSelected4"))
         }
         signing.showPlaceholder(L("detail.noProcessSelected5"))
+        permissions.showPlaceholder(L("detail.noProcessSelected5"))
         command.set(text: L("detail.noProcessSelected6"))
+    }
+
+    // -----------------------------------------------------------------
+    // 权限页：TCC 授予 / 撤销
+    //
+    // 只在 SIP 文件系统保护关闭时开放（否则 TCC.db 受保护，写入必失败）。
+    // 授予 / 撤销本身是一次 SQLite 写入，经 Privilege.run 以 root 执行，
+    // 会弹系统的管理员授权框。
+    // -----------------------------------------------------------------
+
+    private final class TCCMenuTarget: NSObject {
+        let service: String
+        let record: TCCRecord?
+        let allow: Bool
+
+        init(service: String, record: TCCRecord?, allow: Bool) {
+            self.service = service
+            self.record = record
+            self.allow = allow
+        }
+    }
+
+    /// 右键菜单的附加项：只有 TCC 行才有（entitlements 由签名决定，不可改）
+    private func permissionMenuItems(for row: [String]) -> [NSMenuItem] {
+        guard row.count >= 2, let pid = currentPID,
+              let rep = PermissionReader.cachedReport(pid: pid),
+              row[0] == L("perm.catTcc") else { return [] }
+
+        // 数据库读不到时只给「授权入口」，没有可写的记录
+        guard rep.tccReadable else { return fullDiskAccessMenuItems() }
+
+        guard rep.sip.canWriteTCC else {
+            let item = NSMenuItem(title: L("perm.menuNeedsSipOff"),
+                                  action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            return [item]
+        }
+
+        // 表格存的是当前语言的成品文案，按「类别 + 名称」回查采集结果
+        let match = rep.rows.first {
+            $0.category == row[0] && $0.name == row[1] && $0.service != nil
+        }
+
+        var items: [NSMenuItem] = []
+        if let match = match, let service = match.service {
+            for (title, allow) in [(L("perm.menuGrant"), true),
+                                   (L("perm.menuRevoke"), false)] {
+                let item = NSMenuItem(title: title,
+                                      action: #selector(tccMenuAction(_:)),
+                                      keyEquivalent: "")
+                item.target = self
+                item.representedObject = TCCMenuTarget(service: service,
+                                                       record: match.record,
+                                                       allow: allow)
+                items.append(item)
+            }
+        }
+
+        // 「没有记录」的服务不再占表格行，但仍要能新增：放进子菜单。
+        let used = Set(rep.rows.compactMap { $0.service })
+        let grantable = PermissionReader.grantableServices(excluding: used)
+        if !grantable.isEmpty {
+            if !items.isEmpty { items.append(.separator()) }
+            let parent = NSMenuItem(title: L("perm.menuGrantOther"),
+                                    action: nil, keyEquivalent: "")
+            let sub = NSMenu(title: L("perm.menuGrantOther"))
+            for (service, name) in grantable {
+                let item = NSMenuItem(title: name,
+                                      action: #selector(tccMenuAction(_:)),
+                                      keyEquivalent: "")
+                item.target = self
+                item.representedObject = TCCMenuTarget(service: service,
+                                                       record: nil, allow: true)
+                sub.addItem(item)
+            }
+            parent.submenu = sub
+            items.append(parent)
+        }
+        return items
+    }
+
+    /// 「完全磁盘访问」是 TCC.db 的读取前提，系统不提供程序化授予：
+    /// 只能把用户送到设置面板，并给出可拖拽的 App 位置。
+    private func fullDiskAccessMenuItems() -> [NSMenuItem] {
+        let open = NSMenuItem(title: L("perm.menuOpenFDA"),
+                              action: #selector(openFullDiskAccess(_:)),
+                              keyEquivalent: "")
+        open.target = self
+        let reveal = NSMenuItem(title: L("perm.menuRevealApp"),
+                                action: #selector(revealAppForFDA(_:)),
+                                keyEquivalent: "")
+        reveal.target = self
+        return [open, reveal]
+    }
+
+    @objc private func openFullDiskAccess(_ sender: Any?) {
+        guard let url = URL(string:
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
+        else { return }
+        NSWorkspace.shared.open(url)
+        // macOS 没有「请求 FDA」的 API：把用户送到面板，再说明怎么加。
+        let alert = NSAlert()
+        alert.messageText = L("perm.fdaTitle")
+        alert.informativeText = L("perm.fdaSteps")
+        alert.addButton(withTitle: L("app.ok"))
+        alert.runModal()
+    }
+
+    @objc private func revealAppForFDA(_ sender: Any?) {
+        NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
+    }
+
+    @objc private func tccMenuAction(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? TCCMenuTarget,
+              let pid = currentPID else { return }
+        let path = AppContext.shared.store.snapshotIncludingExited(for: pid)?.exepath
+            ?? lastSnapshot?.exepath ?? ""
+        let client = target.record?.client
+            ?? PermissionReader.preferredClient(pid: pid, path: path) ?? "—"
+        let db = target.record?.dbPath
+            ?? (NSHomeDirectory() + "/Library/Application Support/com.apple.TCC/TCC.db")
+
+        let alert = NSAlert()
+        alert.messageText = L(target.allow ? "perm.confirmGrantTitle"
+                                           : "perm.confirmRevokeTitle")
+        alert.informativeText = L(target.allow ? "perm.confirmGrantBody"
+                                               : "perm.confirmRevokeBody",
+                                  PermissionReader.displayName(for: target.service),
+                                  client, db)
+        alert.addButton(withTitle: L(target.allow ? "perm.grant" : "perm.revoke"))
+        alert.addButton(withTitle: L("app.cancel"))
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let (ok, text) = PermissionReader.writeTCC(service: target.service,
+                                                   record: target.record,
+                                                   pid: pid, path: path,
+                                                   allow: target.allow)
+        if ok {
+            reload(force: true)
+        } else {
+            let fail = NSAlert()
+            fail.messageText = L("perm.writeFailedTitle")
+            fail.informativeText = text
+            fail.addButton(withTitle: L("app.ok"))
+            fail.runModal()
+        }
     }
 
     deinit {

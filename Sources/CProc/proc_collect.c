@@ -26,6 +26,25 @@
 #include <mach/host_info.h>
 #include <mach/task_info.h>
 
+/* proc_taskinfo 的 pti_total_user / pti_total_system 单位是 **mach absolute
+ * time**（不是纳秒）。Apple Silicon 上 timebase 是 125/3，直接当纳秒会
+ * 把 CPU 时间算小 41.7 倍 —— 表现就是「%CPU 只有活动监视器的 1/40」：
+ * 活动监视器 39.8% 的进程在这里显示 1.0%。
+ *
+ * 用 timebase 换算成 ns（乘在 128 位里做，避免大数值溢出），上层所有
+ * 消费方（列表 %CPU、概览累计时间、MCP）就都是纳秒口径了。 */
+static uint64_t cproc_abs_to_ns(uint64_t t)
+{
+    static mach_timebase_info_data_t tb;
+    static int inited = 0;
+    if (!inited) {
+        mach_timebase_info(&tb);
+        if (tb.denom == 0) { tb.numer = 1; tb.denom = 1; }
+        inited = 1;
+    }
+    return (uint64_t)(((__uint128_t)t * tb.numer) / tb.denom);
+}
+
 /* xnu bsd/sys/proc_info.h 的 pbi_flags 公开位。旧兜底把 1/2/4/8/0x10…
  * 顺次编号，与真实值全部错位（例如 0x2000 其实是 PSUGID 而不是 LP64），
  * 这里按 xnu 头文件逐项校正。SDK 已导出时 #ifndef 不生效。 */
@@ -444,8 +463,8 @@ int cproc_collect(cproc_system_t *out)
                          &ti, PROC_PIDTASKINFO_SIZE) == PROC_PIDTASKINFO_SIZE) {
             it->rss         = ti.pti_resident_size;
             it->vss         = ti.pti_virtual_size;
-            it->cpu_user_ns = ti.pti_total_user;
-            it->cpu_sys_ns  = ti.pti_total_system;
+            it->cpu_user_ns = cproc_abs_to_ns(ti.pti_total_user);
+            it->cpu_sys_ns  = cproc_abs_to_ns(ti.pti_total_system);
             it->threads     = ti.pti_threadnum;
             it->faults      = ti.pti_faults;
             it->pageins     = ti.pti_pageins;

@@ -25,6 +25,8 @@ let package = Package(
                 .linkedFramework("CoreFoundation"),
                 // Authorization Services：图形界面提权（cproc_auth_*）
                 .linkedFramework("Security"),
+                // libbsm：audit_token_t 的 audit_token_to_* 解析（cproc_audit_*）
+                .linkedLibrary("bsm"),
             ]
         ),
         // MCP stdio 服务（纯命令行，不链接 AppKit）

@@ -14,6 +14,10 @@ extension Notification.Name {
     /// 搜索模式（字面量 / 正则）切换：主表重新过滤、各窗口同步 .* 按钮状态
     static let searchModeDidChange =
         Notification.Name("com.vantage.searchModeDidChange")
+    /// 提权状态变化（预授权 / 吊销 / 降权 / 以 root 重启）：
+    /// 锁按钮重画，依赖作用域的窗口（启动项）重新扫描
+    static let vantagePrivilegeDidChange =
+        Notification.Name("com.vantage.privilegeDidChange")
 }
 
 final class AppContext {

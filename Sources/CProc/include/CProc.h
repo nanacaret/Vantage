@@ -216,14 +216,49 @@ int  cproc_net_routes(cproc_lines_t *out);
  *   cproc_auth_create(&ref)          创建 AuthorizationRef（+1，需 cproc_auth_free）
  *   cproc_auth_request_exec(ref)     申请 system.privilege.admin，**会弹授权框**
  *   cproc_auth_exec(ref, tool, argv, &out)
- *                                    以 root 执行 tool（argv 以 NULL 结尾），
- *                                    stdout 读进 malloc 的 *out（调用方 free）
+ *                                    以 root 直接 exec tool（argv 以 NULL 结尾，
+ *                                    不经 shell），stdout 与 stderr 一起读进
+ *                                    malloc 的 *out（调用方 free）
+ *
+ * cproc_auth_exec 在 exec 期间把进程环境临时换成**白名单**
+ * （PATH/LANG，值写死），子进程退出后还原。因为
+ * AuthorizationExecuteWithPrivileges 没有 envp 参数，子进程靠 fork 继承
+ * environ，只能这样处理；白名单天然免疫 BASH_ENV / ENV / DYLD_* /
+ * BASH_FUNC_* 等注入向量，也不依赖黑名单枚举。stderr 不在通信管道里，
+ * 由本函数临时接管 fd 2 收集 —— 因此调用方不再需要 /bin/sh -c '… 2>&1'
+ * 之类的 shell 中转。
+ *
+ * cproc_clean_environ 把同一份白名单导出给 Swift 的 Process 路径
+ * （Privilege.runDirect / 助手守护进程），三条 spawn 路径共用一份清单。
+ *
  * 返回 0 成功；其余为 OSStatus / 负数错误码。 */
 int  cproc_auth_create(void **out_ref);
 void cproc_auth_free(void *ref);
 int  cproc_auth_request_exec(void *ref);
 int  cproc_auth_exec(void *ref, const char *tool,
                      const char *const argv[], char **out);
+
+/* 最小环境白名单的导出口：条目按 "KEY=VALUE" 以 '\n' 连接写入 buf。
+ * 供 Swift 的 Process 路径构造 environment，与 cproc_auth_exec 同源。
+ * 返回 0 成功，-1 = buf 放不下。 */
+int  cproc_clean_environ(char *buf, size_t cap);
+
+/* ---------- audit_token 字段提取（audit_token_t 的 BSM 解析） ----------
+ * audit_token_t 是不透明结构，必须用 libbsm 的 audit_token_to_* 解析；
+ * 这些函数在 libbsm 里，Swift 直接调会缺链接，故在 C 层包一层。
+ * 参数用「指向 val[8] 数组的指针」而非 audit_token_t，避免该结构在
+ * SwiftPM 的 clang 导入下无法桥接。 */
+pid_t cproc_audit_pid(const unsigned int token[8]);
+uid_t cproc_audit_euid(const unsigned int token[8]);
+uid_t cproc_audit_ruid(const unsigned int token[8]);
+
+/* ---------- SIP 活动配置（sip.c） ----------
+ * 不调用 csrutil：优先 dlsym libSystem 的 `csr_get_active_config`（内核位图，
+ * 逐项可见），拿不到时探测 /System/Library 的 UF_RESTRICTED 文件标志。
+ *   *out_active  位图（0 = SIP 完全开启；0xFFF / 0xFFFFFFFF = 全关）
+ *   *out_from_api 1 = 来自内核 API，0 = 文件标志探测（近似值）
+ * 返回 0 成功，-1 无法判断。 */
+int  cproc_sip_config(uint32_t *out_active, int *out_from_api);
 
 /* SwiftPM 生成的 module map 可能用 umbrella 目录，也可能只用单个头；
  * 这里显式引入，保证两种情况下 CPerf.h 的声明都会被导出到 Swift。

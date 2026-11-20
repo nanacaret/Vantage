@@ -113,9 +113,11 @@ enum WindowLocator {
     /// CGPreflightScreenCaptureAccess / 任何 AppKit 主线程 API，因此可以
     /// 安全地跑在 DetailLoadQueue 后台队列里。
     static func detailLines(for pid: Int32) -> [String] {
-        let cols = [L("window.windowId2"), L("window.title"), L("window.layer2"), L("window.positionSize2"),
-                    L("window.screenState"), L("window.sharingAlpha")]
-        var lines: [String] = [cols.joined(separator: "\t")]
+        // **不要在这里输出表头行**：详情表已经用 localized 表头（setRows 的
+        // headers）。这里再拼一行，parse() 只按中文原文比首列（"窗口号"），
+        // 英文界面下比不中，表头就变成第一行数据（表格里重复一遍列名），
+        // 全局搜索也会把它当成一条结果。
+        var lines: [String] = []
 
         // 屏幕上的窗口号集合：kCGWindowIsOnscreen 字段在部分系统版本缺失，
         // 用一次 onScreenOnly 枚举做交叉验证更可靠。

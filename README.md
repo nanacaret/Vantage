@@ -42,27 +42,31 @@ you can build locally — or download as a DMG from Releases**:
 | Area | What you get |
 |---|---|
 | Process list | Tree / flat view, 14 sortable columns with a three-state header cycle, live refresh (0.5–5 s), filters, regex search, localized names plus raw executable names, optional argv[0] annotation when it differs from the binary, highlighted exited processes |
-| Inspector | 14 tabs — Overview, Files, Environment, Images, Network, Monitoring, Pipe peers, VM Regions, TTY, Threads, Windows, Signature, Mach, Command — each independently filterable (the filter field is collapsed by default; ⌘F reveals and focuses it); right-click any path cell for Reveal in Finder / Copy Path |
+| Inspector | 15 tabs — Overview, Files, Environment, Images, Network, Monitoring, Pipe peers, VM Regions, TTY, Threads, Windows, Signature, Permissions, Mach, Command — each independently filterable (the filter field is collapsed by default; ⌘F reveals and focuses it); right-click any path cell for Reveal in Finder / Copy Path |
 | Signals | Right-click menu and main menu with 31 Darwin signals, configurable visibility (12 shown by default), confirmation policies, pause/resume, `sample` |
-| Performance (⌘P) | CPU/GPU/ANE/DRAM power, whole-machine power (SMC `PSTR`), CPU/GPU temperature, per-cluster frequency from P-state residency, CPU/GPU activity, disk and network throughput, thermal pressure — all with a per-channel diagnostic readout |
+| Performance (⌘⌥M) | CPU/GPU/ANE/DRAM power, whole-machine power (SMC `PSTR`), CPU/GPU temperature, per-cluster frequency from P-state residency, CPU/GPU activity, disk and network throughput, thermal pressure — all with a per-channel diagnostic readout |
 | Global search (⌘⇧F) | Takes a frozen process snapshot, then samples every process across all tabs; results link back to the exact tab and row |
 | Device tree (⌘⌥B) | IORegistry browser across 7 planes with driver bundle lookup, `IOUserClientCreator` client PIDs and full property tables |
 | Extensions (⌘⌥E) | `.kext` / `.dext` / `.systemextension` / `.appex` inventory, load state, `IOKitPersonalities` and Team ID |
 | Window tools | Crosshair window → process lookup (⌘⌥L), global window list, double-click a window to activate it (Accessibility), PID double-click jumps between processes and tabs |
+| Launch Items (⌘⌥J) | Every launchd job on the machine: `LaunchDaemons` / `LaunchAgents` from `/System`, `/Library` and each user's `~/Library`, plus legacy `StartupItems`. Columns show scope, label, type, program, trigger (`RunAtLoad` / `KeepAlive` / `StartInterval` …), live state (running with PID, loaded, disabled, not loaded) and path; selecting a row shows the whole plist underneath — full `ProgramArguments`, `KeepAlive` conditions, Mach service names, run-as user, log paths — so you can tell what an item actually does. Right-click a third-party item to load / unload / enable / disable it (root via Authorization Services); Apple's own entries stay read-only |
+| System Information (⌘⌥I) | Host name, model, chip, physical memory, macOS/kernel version and uptime, plus the SIP active-config bitmask read straight from the kernel (`csr_get_active_config`, with a file-flag probe fallback) — filesystem protections, debugging restrictions and `task_for_pid` |
 | Network (⌘⌥N) | Interfaces in ifconfig terms (state / flags / MTU / MAC / IPv4 / IPv6) with a per-interface address table, plus the routing table (route / netstat terms); bring links up or down, set MTU, add or delete IPv4/IPv6 addresses and routes (including default) |
-| Elevation | A Run as Root button relaunches the app as root through Authorization Services (the system password dialog — no sudo); permission failures show an inline bar with a one-click elevate action instead of a modal alert |
+| Elevation | A Run as Root button relaunches the app as root through Authorization Services (the system password dialog — no sudo); permission failures show an inline bar with a one-click elevate action instead of a modal alert. A lock in the bottom-left corner works like any system utility: click it to pre-authorize once (later privileged actions stop prompting), click again to revoke. A root instance that was elevated from a user account offers Run as User to drop back with `setgid` / `initgroups` / `setuid` |
+| Touch ID elevation (optional) | Off by default. Turning it on installs a root LaunchDaemon helper (one password prompt) so later escalations ask for Touch ID instead of a password. The helper only accepts a client that is the **console user with admin rights** *and* whose code-signing cdhash equals its own (non-admin and non-desktop clients are refused, so the helper cannot be abused to elevate), and only runs an allowlist of tools (`ifconfig`, `route`, `launchctl`) plus the app's hidden `--tcc-write` mode. Turn it off to bootout and delete the helper |
 | MCP server | Standalone `vantage-mcp` executable (stdio JSON-RPC): list processes, dump inspector pages, send signals, read interfaces/routes and system stats — works without the GUI running |
 | AppleScript | `Resources/Vantage.sdef`: `list processes`, `process info`, `quit process`, `list interfaces`, `list routes` |
 | Exited processes | Still open the inspector during the grace window: overview/command replay the last snapshot, lazy tabs replay only what had been collected before exit |
 | Threads tab | One row per thread — TID, name, run state, CPU, user/system time, priority and scheduling policy (PROC_PIDLISTTHREADS + PROC_PIDTHREADINFO); collected only when the tab is opened |
-| Customization | Preferences (⌘,) for collection limits, cache TTLs, refresh intervals, default view, signals, 11 colors and 5 presets; dark mode, i18n, ⌘C row copy, ⌘/⌥-click equivalents |
+| Permissions tab | Three sources in one table: entitlements from the code signature, TCC grants from the user and system TCC.db (status shown as enabled/disabled, with reason and modification date; reading requires Full Disk Access), plus SIP and task-port capability. When SIP filesystem protections are off, right-click a TCC row to grant or revoke it (root via Authorization Services); when a task port is obtainable, task-level memory/CPU/policy rows are added |
+| Customization | Preferences (⌘,) with seven panes (General / Interface / Data & Cache / Search / Privilege / Colors / Signals) for collection limits, cache TTLs, refresh intervals, default view, signals, 11 colors and 5 presets; inspector and settings tab bars can be Auto-wrap, Fixed N per row, or a scrollable left column; dark mode, i18n (a language change restarts once so nothing stays half-translated), ⌘C row copy, ⌘/⌥-click equivalents |
 
 See [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md) for the full feature matrix and
 data-source details.
 
 ## Screenshots
 
-### Performance monitor (⌘P)
+### Performance monitor (⌘⌥M)
 
 ![Performance monitor — Apple M5 power, temperature, frequency and diagnostics](docs/screenshots/performance.png)
 

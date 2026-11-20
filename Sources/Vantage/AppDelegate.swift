@@ -33,6 +33,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             wc.window?.orderFrontRegardless()
             AppActivate.front()
             AppContext.shared.start()
+            // 用 Touch ID 提权的话，顺手查一下 root 助手是不是还是当前这份构建
+            // （升级 / 重新编译后必须重装，否则指纹这条路会静默退回密码框）。
+            wc.verifyTouchIDHelperIfNeeded()
+            if Privilege.isRoot { wc.claimFrontFocus() }
         }
     }
 
@@ -64,24 +68,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for mi in appMenu.items
             where mi.action != #selector(preferencesAction) { mi.target = nil }
 
-        // 文件
-        main.addItem(menu(L("menu.file"), [
-            item(L("menu.refreshNow"), #selector(refreshAction), "r"),
-            sep(),
-            item(L("menu.openInspector"), #selector(inspectorAction), "i"),
-            item(L("menu.performanceMonitor"), #selector(performanceAction), "p"),
-            item(L("menu.revealInFinder"), #selector(revealAction), ""),
-            item(L("menu.sampleProcess"), #selector(sampleAction), ""),
-        ]))
-
         // 编辑：补齐 AppKit 标准编辑项。手写 NSApplication（无故事板）时
         // 系统不会自动创建这些菜单项，缺了「复制 ⌘C」= 键盘快捷键完全无效，
         // 只剩 NSTextView 右键菜单里自带的「复制」可用。
         let focusSearch = item(L("menu.focusSearch"), #selector(focusSearchAction), "f")
         let editItem = menu(L("menu.edit"), [
             focusSearch,
-            item(L("menu.globalSearch"), #selector(globalSearchAction), "f",
-                 [.command, .shift]),
             sep(),
             responderItem(L("menu.undo"), ResponderAction.undo, "z"),
             responderItem(L("menu.redo"), ResponderAction.redo, "z",
@@ -103,6 +95,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         focusSearchItem = focusSearch
         main.addItem(editItem)
 
+        // 菜单划分（一条规则：**每个窗口只在一个菜单里出现一次**）
+        //   进程 —— 对选中进程的操作（检查器 / 信号 / 退出 / 采样 / 定位）
+        //   视图 —— 主列表的呈现方式（刷新 / 树或列表 / 过滤 / 列宽）
+        //   工具 —— 所有独立窗口（全局搜索、窗口列表、系统信息、网络、启动项、
+        //           设备树、扩展、性能监控），⌘⌥+ 一个字母
+        //   窗口 —— 只放窗口管理工作：主窗口 ⌘0 / 最小化 ⌘M / 关闭 ⌘W
+        // 之前「性能监控 / 窗口列表 / 全局搜索」同时挂在两个菜单下，
+        // 快捷键也散落在 ⌘P、⌘⇧F、无快捷键三个地方，这里统一收敛。
+
         // 视图
         let intervalMenu = NSMenu()
         for (title, value) in [(L("menu.s"), 0.5), (L("menu.s2"), 1.0),
@@ -114,10 +115,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             mi.tag = Int(value * 10)
             intervalMenu.addItem(mi)
         }
-        let intervalItem = NSMenuItem(title: L("menu.refreshInterval"), action: nil, keyEquivalent: "")
+        let intervalItem = NSMenuItem(title: L("menu.refreshInterval"),
+                                      action: nil, keyEquivalent: "")
         intervalItem.submenu = intervalMenu
 
-        let viewItems: [NSMenuItem] = [
+        main.addItem(menu(L("menu.view"), [
+            item(L("menu.refreshNow"), #selector(refreshAction), "r"),
+            sep(),
             item(L("menu.treeView"), #selector(treeAction), "1"),
             item(L("menu.listView"), #selector(listAction), "2"),
             sep(),
@@ -129,41 +133,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             intervalItem,
             sep(),
             item(L("menu.resetColumnWidthsToDefault"), #selector(resetColumnWidthsAction), ""),
-        ]
-        main.addItem(menu(L("menu.view"), viewItems))
+        ]))
 
         // 进程
         main.addItem(menu(L("menu.process"), [
+            item(L("menu.openInspector"), #selector(inspectorAction), "i"),
+            item(L("menu.sampleProcess"), #selector(sampleAction), ""),
+            item(L("menu.revealInFinder"), #selector(revealAction), "r",
+                 [.command, .shift]),
+            sep(),
             item(L("menu.locateProcessByWindow"), #selector(locateByWindowAction), "l",
                  [.option, .command]),
-            item(L("menu.windowList"), #selector(windowListAction), ""),
-            NSMenuItem.separator(),
+            sep(),
             item(L("menu.quitProcessSigterm"), #selector(terminateAction), "k",
                  [.option, .command]),
             item(L("menu.forceQuitSigkill"), #selector(forceTerminateAction), "k",
                  [.option, .command, .shift]),
-            item(L("menu.pauseResume"), #selector(suspendAction), "p", [.option, .command]),
-            NSMenuItem.separator(),
+            item(L("menu.pauseResume"), #selector(suspendAction), "p",
+                 [.option, .command]),
+            sep(),
             signalMenuItem(),
         ]))
 
-        // 窗口
-        let windowItems: [NSMenuItem] = [
-            item(L("menu.mainWindow"), #selector(showMainWindowAction), "0"),
-            item(L("menu.performanceMonitor2"), #selector(performanceAction), ""),
-            item(L("menu.windowList2"), #selector(windowListAction), ""),
-            item(L("menu.globalSearch2"), #selector(globalSearchAction), ""),
+        // 工具：独立窗口的唯一入口
+        main.addItem(menu(L("menu.tools"), [
+            item(L("menu.globalSearch"), #selector(globalSearchAction), "f",
+                 [.command, .shift]),
+            item(L("menu.windowList"), #selector(windowListAction), "w",
+                 [.option, .command]),
+            sep(),
+            item(L("menu.systemInfo"), #selector(systemInfoAction), "i",
+                 [.command, .option]),
             item(L("menu.network"), #selector(networkAction), "n",
                  [.command, .option]),
-            item(L("menu.deviceBrowser2"), #selector(deviceBrowserAction), "b",
+            item(L("menu.launchItems"), #selector(launchItemsAction), "j",
                  [.command, .option]),
+            sep(),
+            item(L("menu.deviceBrowser2"), #selector(deviceBrowserAction), "b",
+                 [.option, .command]),
             item(L("menu.extensionsBrowser2"), #selector(extensionsBrowserAction),
                  "e", [.command, .option]),
+            item(L("menu.performanceMonitor"), #selector(performanceAction), "m",
+                 [.command, .option]),
+        ]))
+
+        // 窗口：只做窗口管理
+        let windowItems: [NSMenuItem] = [
+            item(L("menu.mainWindow"), #selector(showMainWindowAction), "0"),
             NSMenuItem.separator(),
             item(L("menu.minimized"), #selector(NSWindow.performMiniaturize(_:)), "m"),
             item(L("menu.close"), #selector(NSWindow.performClose(_:)), "w"),
         ]
-        // NSApplication / NSWindow 的标准动作交给响应链，自定义动作保留 target
+        // NSWindow 的标准动作交给响应链，自定义动作保留 target
         for mi in windowItems {
             if mi.action == #selector(NSWindow.performMiniaturize(_:)) ||
                mi.action == #selector(NSWindow.performClose(_:)) {
@@ -172,7 +193,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         main.addItem(menu(L("menu.window"), windowItems))
 
+        validateMenuShortcuts(main)
         NSApp.mainMenu = main
+    }
+
+    /// 快捷键唯一性自检：同一个 ⌘ 组合绝不能挂两个菜单项
+    /// （历史上「性能监控 / 窗口列表 / 全局搜索」就各自出现过两份）。
+    /// 只在开发期可见（stderr），不影响用户。
+    private func validateMenuShortcuts(_ menu: NSMenu) {
+        var seen: [String: String] = [:]
+        func walk(_ m: NSMenu) {
+            for mi in m.items {
+                if let sub = mi.submenu { walk(sub) }
+                guard !mi.keyEquivalent.isEmpty else { continue }
+                var mods = "cmd"
+                if mi.keyEquivalentModifierMask.contains(.option) { mods += "+opt" }
+                if mi.keyEquivalentModifierMask.contains(.shift) { mods += "+shift" }
+                if mi.keyEquivalentModifierMask.contains(.control) { mods += "+ctrl" }
+                let key = mods + "+" + mi.keyEquivalent.lowercased()
+                if let other = seen[key] {
+                    NSLog("menu shortcut conflict: %@ used by «%@» and «%@»",
+                          key, other, mi.title)
+                } else {
+                    seen[key] = mi.title
+                }
+            }
+        }
+        walk(menu)
     }
 
     /// 主菜单里的「发送信号 ▸」。子菜单内容每次展开时按偏好重建。
@@ -241,6 +288,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func windowListAction(_ sender: Any?) {
         WindowListWindowController.shared.showWindow(nil)
+    }
+
+    /// ⌘⌥I：系统信息（SIP 等整机属性，不属于任何进程）
+    @objc private func systemInfoAction(_ sender: Any?) {
+        SystemInfoWindowController.shared.showWindow(nil)
+    }
+
+    /// ⌘⌥J：启动项 / 后台任务（launchd 守护进程与代理）
+    @objc private func launchItemsAction(_ sender: Any?) {
+        LaunchItemsWindowController.shared.showWindow(nil)
     }
 
     @objc private func networkAction(_ sender: Any?) {

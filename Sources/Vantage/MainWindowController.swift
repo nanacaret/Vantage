@@ -17,7 +17,7 @@ final class InspectorWindowController: NSWindowController, NSWindowDelegate {
         t.hidesFilterByDefault = true
         self.tabs = t
 
-        // 14 个页签按偏好里的「每行上限」拆成多行（默认 7 → 两行），
+        // 15 个页签由 TabStripView 排布（自动折行 / 每行固定 N 个 / 左侧竖排），
         // 不再依赖一行 segmented control 的宽度；窗口页有 6 列，仍需横向空间。
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1140, height: 620),
                          styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -30,6 +30,8 @@ final class InspectorWindowController: NSWindowController, NSWindowDelegate {
                 + ($0.isExited ? L("list.exitedSuffix") : "")
         } ?? L("window.inspectorPid2", pid)
         w.minSize = NSSize(width: 660, height: 420)
+        // minSize 只管用户拖拽；程序化的「缩到 fittingSize」要靠 contentMinSize
+        w.contentMinSize = NSSize(width: 660, height: 420)
         w.center()
         super.init(window: w)
 
@@ -72,7 +74,7 @@ final class MainWindowController: NSWindowController {
 
     private let listVC = ProcessListViewController()
     private let detailTabs = DetailTabViewController()
-    /// 详情页签容器（多行页签条 + 原来的 NSTabViewController）
+    /// 详情页签容器（页签条 + 原来的 NSTabViewController）
     private lazy var detailPane = DetailTabPaneController(tabs: detailTabs)
     private let statsVC = StatsPanelViewController()
 
@@ -143,14 +145,40 @@ final class MainWindowController: NSWindowController {
     private lazy var inspectorButton: NSButton =
         UI.button(L("window.inspector"), target: self, action: #selector(inspectorClicked(_:)))
 
-    /// 提权入口（非 root 时可点）。已 root 时显示「已以 root 运行」并禁用。
+    /// 提权 / 降权入口：
+    ///   · 非 root：以 root 重启（系统授权框）
+    ///   · root 且 ruid ≠ euid（经授权启动）：可原地降权回登录用户
+    ///   · 真·root 登录：仅显示「已以 root 运行」
     private lazy var privilegeButton: NSButton = {
         let b = UI.button(L("priv.runAsRoot"), target: self,
-                          action: #selector(escalateClicked(_:)))
+                          action: #selector(privilegeClicked(_:)))
         b.font = NSFont.systemFont(ofSize: 11)
         b.toolTip = L("priv.runAsRootTip")
         return b
     }()
+
+    /// 左下角的锁（系统工具同款交互）：
+    ///   · 关 = 未持有凭据：点一下预先授权（Pre-auth），之后特权操作不再询问
+    ///   · 开 = 已缓存凭据 / 指纹会话：点一下吊销
+    ///   · root = 永久打开，不可点
+    private lazy var lockButton: NSButton = {
+        let b = NSButton(frame: .zero)
+        b.image = NSImage(systemSymbolName: "lock.fill",
+                          accessibilityDescription: L("priv.lockLocked"))
+        b.imagePosition = .imageOnly
+        b.isBordered = false
+        b.bezelStyle = .regularSquare
+        b.contentTintColor = .secondaryLabelColor
+        b.target = self
+        b.action = #selector(lockClicked(_:))
+        b.translatesAutoresizingMaskIntoConstraints = false
+        return b
+    }()
+
+    /// 锁旁边的一行小字：已锁定 / 已解锁 / root
+    private let lockLabel = UI.label("", size: 10, color: .secondaryLabelColor)
+    /// 预授权进行中：期间禁止重复触发
+    private var preauthorizing = false
 
     // 权限不足时的**内联**提示条（不弹窗）：原因 + 「立即提权」+ 关闭
     private let permissionBar = NSView(frame: .zero)
@@ -282,6 +310,10 @@ final class MainWindowController: NSWindowController {
         divider.translatesAutoresizingMaskIntoConstraints = false
         bottomBar.addSubview(divider)
 
+        bottomBar.addSubview(lockButton)
+        lockLabel.translatesAutoresizingMaskIntoConstraints = false
+        bottomBar.addSubview(lockLabel)
+
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
         bottomBar.addSubview(statusLabel)
 
@@ -305,8 +337,18 @@ final class MainWindowController: NSWindowController {
             divider.trailingAnchor.constraint(equalTo: bottomBar.trailingAnchor),
             divider.heightAnchor.constraint(equalToConstant: 1),
 
-            statusLabel.leadingAnchor.constraint(equalTo: bottomBar.leadingAnchor,
-                                                 constant: 10),
+            lockButton.leadingAnchor.constraint(equalTo: bottomBar.leadingAnchor,
+                                                constant: 8),
+            lockButton.centerYAnchor.constraint(equalTo: bottomBar.centerYAnchor),
+            lockButton.widthAnchor.constraint(equalToConstant: 18),
+            lockButton.heightAnchor.constraint(equalToConstant: 18),
+
+            lockLabel.leadingAnchor.constraint(equalTo: lockButton.trailingAnchor,
+                                               constant: 4),
+            lockLabel.centerYAnchor.constraint(equalTo: bottomBar.centerYAnchor),
+
+            statusLabel.leadingAnchor.constraint(equalTo: lockLabel.trailingAnchor,
+                                                 constant: 12),
             statusLabel.centerYAnchor.constraint(equalTo: bottomBar.centerYAnchor),
             statusLabel.trailingAnchor.constraint(lessThanOrEqualTo:
                 hintLabel.leadingAnchor, constant: -10),
@@ -427,6 +469,18 @@ final class MainWindowController: NSWindowController {
         NotificationCenter.default.addObserver(
             self, selector: #selector(searchModeChanged),
             name: .searchModeDidChange, object: nil)
+        // 「吊销授权」只在缓存了提权凭据时显示。凭据可能由网络窗口等
+        // 其它入口取得，所以窗口回到前台时重新同步一次按钮状态。
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(syncPrivilegeUI),
+            name: NSApplication.didBecomeActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(syncPrivilegeUI),
+            name: NSWindow.didBecomeKeyNotification, object: nil)
+        // 预授权 / 吊销 / 降权都会发这个通知（锁按钮由它驱动）
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(privilegeStateChanged),
+            name: .vantagePrivilegeDidChange, object: nil)
     }
 
     // -----------------------------------------------------------------
@@ -445,7 +499,9 @@ final class MainWindowController: NSWindowController {
     /// - canEscalate: 已是 root 时为 false —— 那种情况是 SIP / entitlements
     ///   限制，再提权也没用，只显示原因。
     func showPermissionHint(_ reason: String, canEscalate: Bool = true) {
+        hintMode = .elevate
         permissionLabel.stringValue = reason
+        permissionButton.title = L("priv.elevateNow")
         permissionButton.isHidden = !canEscalate
         setHintVisible(true)
     }
@@ -472,9 +528,14 @@ final class MainWindowController: NSWindowController {
     ///    真正的退出判断是「另一个 Vantage 窗口出现」，从点击那一刻就开始轮询，
     ///    与那次调用何时返回无关。后台线程的返回值只用来区分「用户取消了授权」。
     @objc private func escalateClicked(_ sender: Any?) {
+        if hintMode == .repairHelper {
+            startHelperRepair()
+            return
+        }
         guard !Privilege.isRoot, !escalating else { return }
         escalating = true
         launchResult = nil
+        Privilege.setEscalationError(nil)
         baselineWindowPIDs = vantageWindowPIDs()
         permissionLabel.stringValue = L("priv.restarting")
         permissionButton.isHidden = true
@@ -503,18 +564,21 @@ final class MainWindowController: NSWindowController {
             tries += 1
             // 窗口检查很便宜（CGWindowList 几十条），每轮都做
             if anotherVantageWindowVisible() {
-                exit(0)
+                handOverFrontAndExit()
+                return
             }
             // 进程表快照要遍历几百个进程，降频到每 3 轮（≈1 秒）一次，
             // 免得等待期间主线程每隔 300ms 抖一下
             if tries % 3 == 0,
                Privilege.otherInstanceRunning(exe: exe, excluding: me) {
-                exit(0)
+                handOverFrontAndExit()
+                return
             }
             // 后台那次调用已经明确失败（用户点了取消 / 授权错误）：马上反馈，
-            // 不必等满 10 秒
+            // 不必等满 10 秒。优先用具体原因（助手版本不一致、会话对不上…），
+            // 拿不到具体原因时才退回笼统的「已取消提权」。
             if launchResult == false {
-                endEscalation(L("priv.cancelled"))
+                endEscalation(Privilege.lastEscalationError ?? L("priv.cancelled"))
                 return
             }
             if tries >= 33 {                       // ≈10 秒
@@ -524,6 +588,55 @@ final class MainWindowController: NSWindowController {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { poll() }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { poll() }
+    }
+
+    /// 交接焦点后退出。
+    ///
+    /// 新实例是以 root 通过 `launchctl asuser` 起的，LaunchServices 不把它当成
+    /// 「用户点开的 App」：窗口画出来了，但常常不持焦点。旧实例这时还在用户会话
+    /// 里、又有激活权，由它把新实例 `activate` 一下最稳；随后稍等 250ms 再退出，
+    /// 否则旧进程一消失，焦点会落到「下一个 App」而不是新窗口上。
+    private var handingOver = false
+
+    private func handOverFrontAndExit() {
+        guard !handingOver else { return }
+        handingOver = true
+        if let pid = newInstancePID(),
+           let app = NSRunningApplication(processIdentifier: pid) {
+            app.activate(options: [.activateAllWindows,
+                                   .activateIgnoringOtherApps])
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { exit(0) }
+    }
+
+    /// 新出现的那个实例的 pid（nil = 只从进程表里看到、没有窗口可依据）
+    private func newInstancePID() -> Int32? {
+        vantageWindowPIDs().subtracting(baselineWindowPIDs).first
+    }
+
+    /// 主动要焦点（root 实例启动时调用）。
+    ///
+    /// 连续几次是必要的：第一次调用常常赶在窗口还没上屏 / App 还没被
+    /// LaunchServices 认成「活动 App」之前。整套操作是幂等的，重复没有副作用。
+    func claimFrontFocus() {
+        guard let window = window else { return }
+        var attempt = 0
+        func tick() {
+            attempt += 1
+            if #available(macOS 14.0, *) {
+                NSApp.activate()
+            } else {
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            _ = NSRunningApplication.current.activate(
+                options: [.activateAllWindows, .activateIgnoringOtherApps])
+            window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
+            if attempt < 6 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { tick() }
+            }
+        }
+        tick()
     }
 
     /// 窗口列表里是否已有「另一个进程」的 Vantage 窗口。
@@ -552,23 +665,221 @@ final class MainWindowController: NSWindowController {
     private func endEscalation(_ message: String) {
         escalating = false
         launchResult = nil
+        hintMode = .elevate
         permissionLabel.stringValue = message
+        permissionButton.title = L("priv.elevateNow")
         permissionButton.isHidden = false
         privilegeButton.isEnabled = !Privilege.isRoot
     }
 
-    /// 按钮与提示文案跟随当前身份
-    func syncPrivilegeUI() {
+    // -----------------------------------------------------------------
+    // Touch ID 助手健康检查
+    // -----------------------------------------------------------------
+
+    /// 提示条上的按钮当前代表哪个动作。
+    /// 同一个位置既要能「立即提权」，也要能「重装助手」—— 助手版本不一致时
+    /// 提权本身还能靠密码走完，但用户更需要的是把指纹这条路修好。
+    private enum HintMode { case elevate, repairHelper }
+    private var hintMode: HintMode = .elevate
+    private var didCheckHelper = false
+
+    /// 启动后查一次：偏好开了指纹、但助手版本对不上 / 没在跑 → 明确提示重装。
+    /// 检查要连 socket + 算 cdhash，放后台，别拖慢窗口出现。
+    func verifyTouchIDHelperIfNeeded() {
+        guard !didCheckHelper else { return }
+        didCheckHelper = true
+        guard Preferences.shared.touchIDAuth, !Privilege.isRoot else { return }
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let reason = TouchIDAuth.unavailableReason
+            DispatchQueue.main.async {
+                guard let self = self, let reason = reason else { return }
+                self.showHelperRepairHint(reason)
+            }
+        }
+    }
+
+    private func showHelperRepairHint(_ reason: String) {
+        guard !escalating, permissionBar.isHidden else { return }
+        hintMode = .repairHelper
+        permissionLabel.stringValue = reason
+        // 还没装过就说「安装」，装过但版本不对才说「重装」
+        permissionButton.title = TouchIDHelper.isInstalled
+            ? L("priv.touchIDRepairHint") : L("priv.touchIDInstallHint")
+        permissionButton.isHidden = false
+        setHintVisible(true)
+    }
+
+    /// 直接在主窗口里重装助手（会弹一次系统密码框）
+    private func startHelperRepair() {
+        guard !escalating else { return }
+        escalating = true
+        hintMode = .repairHelper
+        permissionButton.isHidden = true
+        permissionLabel.stringValue = L("priv.touchIDInstalling")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = TouchIDHelper.install()
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.escalating = false
+                self.permissionButton.isHidden = false
+                if result.ok {
+                    self.permissionButton.title = L("priv.elevateNow")
+                    self.hintMode = .elevate
+                    self.permissionLabel.stringValue = L("priv.touchIDInstalled")
+                    self.didCheckHelper = true
+                } else {
+                    self.hintMode = .repairHelper
+                    self.permissionLabel.stringValue = result.message
+                }
+                Privilege.notifyPrivilegeChanged()
+            }
+        }
+    }
+
+    /// 按钮与提示文案跟随当前身份。
+    /// 兜底再切一次主线程：这里会改 NSButton 的图片 / tint，后台线程改视图会让
+    /// CoreAutoLayout 抛异常直接 abort（曾经就是这么崩的）。
+    @objc func syncPrivilegeUI() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in self?.syncPrivilegeUI() }
+            return
+        }
         if Privilege.isRoot {
-            privilegeButton.title = L("priv.runningAsRoot")
-            privilegeButton.isEnabled = false
-            privilegeButton.toolTip = nil
+            if Privilege.canDropToUser {
+                privilegeButton.title = L("priv.runAsUser")
+                privilegeButton.isEnabled = true
+                privilegeButton.toolTip = L("priv.runAsUserTip")
+            } else {
+                privilegeButton.title = L("priv.runningAsRoot")
+                privilegeButton.isEnabled = false
+                privilegeButton.toolTip = nil
+            }
         } else {
             privilegeButton.title = L("priv.runAsRoot")
             privilegeButton.isEnabled = true
             privilegeButton.toolTip = L("priv.runAsRootTip")
         }
+        syncLockUI()
     }
+
+    /// 锁按钮 + 小字：三态跟随 Privilege.lockState
+    private func syncLockUI() {
+        let state = Privilege.lockState
+        let open = state != .locked
+        lockButton.image = NSImage(
+            systemSymbolName: open ? "lock.open.fill" : "lock.fill",
+            accessibilityDescription: nil)
+        lockButton.isEnabled = state != .root && !preauthorizing
+
+        switch state {
+        case .root:
+            lockButton.contentTintColor = .systemGreen
+            lockLabel.stringValue = L("priv.lockRoot")
+            lockLabel.textColor = .secondaryLabelColor
+            lockButton.toolTip = L("priv.lockRootTip")
+        case .unlocked:
+            lockButton.contentTintColor = .controlAccentColor
+            lockLabel.stringValue = L("priv.lockUnlocked")
+            lockLabel.textColor = .controlAccentColor
+            lockButton.toolTip = L("priv.lockRevokeTip")
+        case .locked:
+            lockButton.contentTintColor = .secondaryLabelColor
+            lockLabel.stringValue = L("priv.lockLocked")
+            lockLabel.textColor = .secondaryLabelColor
+            lockButton.toolTip = L("priv.lockPreauthTip")
+        }
+    }
+
+    @objc private func privilegeStateChanged() {
+        syncPrivilegeUI()
+        refreshHelperHintIfVisible()
+    }
+
+    /// 助手装好 / 重装完（偏好页那边会发通知）：把提示条上的原因换掉。
+    private func refreshHelperHintIfVisible() {
+        guard hintMode == .repairHelper, !escalating, !Privilege.isRoot,
+              Preferences.shared.touchIDAuth else { return }
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let reason = TouchIDAuth.unavailableReason
+            DispatchQueue.main.async {
+                guard let self = self, self.hintMode == .repairHelper else { return }
+                if let reason = reason {
+                    self.permissionLabel.stringValue = reason
+                } else {
+                    self.hintMode = .elevate
+                    self.permissionButton.title = L("priv.elevateNow")
+                    self.permissionLabel.stringValue = L("priv.touchIDInstalled")
+                }
+            }
+        }
+    }
+
+    /// 点锁：关 → 预授权；开 → 吊销
+    @objc private func lockClicked(_ sender: Any?) {
+        guard !preauthorizing else { return }
+        switch Privilege.lockState {
+        case .root:
+            return
+        case .unlocked:
+            Privilege.revokeAuthorization()
+            syncLockUI()
+        case .locked:
+            preauthorize()
+        }
+    }
+
+    /// 预先授权：现在就把凭据拿到手（密码或指纹），后续特权操作不再弹框。
+    /// `authorize()` 会阻塞到用户完成对话框，必须放后台。
+    private func preauthorize() {
+        preauthorizing = true
+        syncLockUI()
+        lockLabel.stringValue = L("priv.lockAuthorizing")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let ok = Privilege.authorize()
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.preauthorizing = false
+                self.syncLockUI()
+                if !ok {
+                    self.lockLabel.stringValue = L("priv.lockCancelled")
+                    self.lockLabel.textColor = .secondaryLabelColor
+                }
+            }
+        }
+    }
+
+    /// 提权按钮的两种语义：降权（root 且 ruid ≠ euid）或提权重启
+    @objc private func privilegeClicked(_ sender: Any?) {
+        guard !escalating else { return }
+        if Privilege.canDropToUser {
+            confirmDropToUser()
+        } else {
+            escalateClicked(sender)
+        }
+    }
+
+    /// 原地降权：euid 0 → 真实 uid。之后需要 root 的操作要重新授权。
+    private func confirmDropToUser() {
+        let alert = NSAlert()
+        alert.messageText = L("priv.confirmDropTitle")
+        alert.informativeText = L("priv.confirmDropBody",
+                                  String(Privilege.dropUID ?? 0))
+        alert.addButton(withTitle: L("priv.drop"))
+        alert.addButton(withTitle: L("app.cancel"))
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        guard Privilege.dropToUser() else {
+            let fail = NSAlert()
+            fail.messageText = L("priv.dropFailed")
+            fail.informativeText = L("priv.dropFailedBody")
+            fail.addButton(withTitle: L("app.ok"))
+            fail.runModal()
+            return
+        }
+        syncPrivilegeUI()
+        NotificationCenter.default.post(name: .procDetailForceRefresh, object: nil)
+    }
+
 
     func syncToolbar() {
         let store = AppContext.shared.store

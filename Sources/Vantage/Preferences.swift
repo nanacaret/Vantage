@@ -240,14 +240,51 @@ final class Preferences {
         set { L10n.language = newValue }
     }
 
-    /// 检查器页签每行的排布方式。
-    /// 0 = 自动：按每个页签标题的实际宽度贪心换行，行内不再拉伸，
-    /// 因此每行个数可以不同，也不会有大片空白（默认）。
-    /// 2…14 = 固定个数：每行等宽等分，行数 = ceil(页签数 / 该值)。
-    var detailTabsPerRow: Int {
-        get { int("detailTabsPerRow", 0, 0, 14) }
-        set { setInt(newValue, "detailTabsPerRow", 0, 14) }
+    /// 页签排布样式（检查器与偏好设置共用同一份）。
+    ///   auto  —— 按标题实际宽度贪心折行（默认）
+    ///   fixed —— 每行固定 `detailTabsPerRow` 个、等宽等分
+    ///   left  —— 竖排在左侧，可滚动
+    /// 旧版本只有 `detailTabsPerRow`（0 = 自动，2…15 = 固定），
+    /// 首次读取时按它推断样式，升级后外观不变。
+    var tabsStyle: TabBarStyle {
+        get {
+            if d.object(forKey: k("tabsStyle")) != nil {
+                return TabBarStyle(rawValue: int("tabsStyle", 0, 0, 2)) ?? .left
+            }
+            // 没有这个键：默认「左侧竖排」。但旧版本只有「每行个数」这一个
+            // 设置，显式选过固定个数的用户按 fixed 处理，不让升级改掉他们的选择。
+            return detailTabsPerRow > 0 ? .fixed : .left
+        }
+        set { setInt(newValue.rawValue, "tabsStyle", 0, 2) }
     }
+
+    /// 固定排布时每行几个页签（2…15）。auto / left 下不使用。
+    var detailTabsPerRow: Int {
+        get { int("detailTabsPerRow", 0, 0, 15) }
+        set { setInt(newValue, "detailTabsPerRow", 0, 15) }
+    }
+
+    /// 页签条的排布模式（供 TabStripView 直接使用）
+    var tabStripMode: TabStripView.Mode {
+        switch tabsStyle {
+        case .left:  return .vertical
+        case .fixed: return .horizontal(perRow: max(2, detailTabsPerRow))
+        case .auto:  return .horizontal(perRow: 0)
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // 提权
+    // ---------------------------------------------------------------
+
+    /// 用 Touch ID 代替管理员密码（只读）。
+    ///
+    /// 这是**机器级**状态：装的是 root LaunchDaemon，与登录用户无关，
+    /// 所以不能存在 UserDefaults（提权出来的 root 实例读的是 /var/root，
+    /// 会显示成「未启用」）。真正的判据在 `TouchIDState`（/Library 下的
+    /// 标记文件），由安装 / 卸载脚本增删。
+    var touchIDAuth: Bool { TouchIDState.isEnabled }
+
 
     // ---------------------------------------------------------------
     // 右键 / 主菜单里显示的信号
@@ -351,8 +388,8 @@ final class Preferences {
         "useLocalizedAppName", "rawNameStyle",
         "showDetailHints", "language",
         "searchUseRegex", "globalSearchHeavyPages", "globalSearchMaxRows",
-        "ioregMaxNodes", "scanAppExtensions",
-        "detailTabsPerRow",
+        "ioregMaxNodes", "scanAppExtensions", "touchIDAuth",
+        "tabsStyle", "detailTabsPerRow",
     ]
 
     /// 把 C 侧字段下发给采集层，并通知各模块刷新运行时选项。

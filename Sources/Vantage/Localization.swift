@@ -371,6 +371,9 @@ enum L10n {
     static func relocalize(_ view: NSView) {
         if let tv = view as? NSTableView { relocalizeColumns(tv) }
         for sub in view.subviews {
+            // AppKit 自己的私有视图一律不碰（类名以下划线开头）。它们的
+            // 内部控件是「隐式」的：改一次 title 就可能把它从隐藏变成可见。
+            if NSStringFromClass(type(of: sub)).hasPrefix("_") { continue }
             if let tv = sub as? NSTableView { relocalizeColumns(tv) }
             // NSScrollView 的 documentView 不在 subviews 里
             if let sv = sub as? NSScrollView, let doc = sv.documentView { relocalize(doc) }
@@ -402,6 +405,14 @@ enum L10n {
                     }
                 }
             }
+            // 搜索框到此为止：macOS 26 的 NSSearchField 内部是
+            //   _NSCoreHostingView<AppKitSearchField> → NSButton（放大镜）
+            //     → NSButtonTextField(value="search")
+            // 再往下递归就会给那个内部 NSButton 设 title，把本该隐藏的
+            // 「search」文本显示出来、并把占位符往右挤 20 多 pt ——
+            // 表现就是「切换语言后搜索框里多出一个 search 且文字错位」。
+            // 搜索框自己的 placeholder 在上面 NSTextField 分支已经处理过了。
+            if sub is NSSearchField { continue }
             relocalize(sub)
         }
     }

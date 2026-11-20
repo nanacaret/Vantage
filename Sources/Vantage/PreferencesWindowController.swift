@@ -48,10 +48,11 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
         case globalSearchHeavyPages = 315
         case scanAppExtensions = 316
         case showArgv0WhenDifferent = 317
+        case touchIDAuth = 318
         // 弹出菜单段 200–204 已占满，名称格式 / 语言另起一段
         case rawNameStyle = 205
         case language = 206
-        case inspectorTabsPerRow = 207
+        case tabsLayout = 207, classicPerRow
     }
 
     /// 样式页控件的 tag 段，避开上面的 Tag 段；信号页 checkbox 用信号编号 1–31
@@ -60,19 +61,42 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
     private static let colorResetTagBase = 3000
     private static let signalCheckTagBase = 4000
 
-    private let content = NSStackView()          // 「通用」页
-    private let styleContent = NSStackView()    // 「样式」页
-    private let signalContent = NSStackView()   // 「信号」页
+    /// 设置分页。原来「通用」一页塞了 9 组、二十多项，滚动条长得离谱；
+    /// 按用途拆开后每组都能在一屏内看完。
+    enum Pane: Int, CaseIterable {
+        case general, interface, data, search, privilege, appearance, signals
+
+        var titleKey: String {
+            switch self {
+            case .general:    return "pref.nav.general"
+            case .interface:  return "pref.nav.interface"
+            case .data:       return "pref.nav.data"
+            case .search:     return "pref.nav.search"
+            case .privilege:  return "pref.nav.privilege"
+            case .appearance: return "pref.nav.appearance"
+            case .signals:    return "pref.nav.signals"
+            }
+        }
+    }
+
+    private let footer = NSStackView()
+    private var currentPane = 0
+    private var paneStacks: [NSStackView] = []
+    private var paneScrolls: [NSScrollView] = []
+    private let paneContainer = NSView()
+
+    /// 页签条与检查器共用（自动折行 / 固定每行 / 左侧竖排）
+    private let tabBar = TabStripView()
+    private var barHorizontal: [NSLayoutConstraint] = []
+    private var barVertical: [NSLayoutConstraint] = []
+    private var barWidth: NSLayoutConstraint?
+    private var rootMinWidth: NSLayoutConstraint?
+    private var appliedMode: TabStripView.Mode?
+
     /// helper 当前往哪个 stack 里加行。用普通 Optional 而非 IUO ——
     /// buildUI 里若任何一步提前返回，IUO 的隐式解包会直接 SIGTRAP 且
     /// 不打印任何消息，正是这类「打开设置页立刻崩溃」最难查的形态。
     private var activeStack: NSStackView?
-    /// 三个页签切换完全用纯 NSView + isHidden，不碰 NSTabView /
-    /// NSTabViewItem：macOS 26 上 NSTabView 的 addTabViewItem / 视图托管
-    /// 路径有内部断言（本项目主窗口详情 Tab 已踩过 delegate 那条），
-    /// 这里从根上避开。
-    private var tabSegment: NSSegmentedControl?
-    private var panes: [NSScrollView] = []
 
     private var numberFields: [Int: NSTextField] = [:]
     private var checkboxes: [Int: NSButton] = [:]
@@ -87,6 +111,11 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
     private let namePreviewLabel = UI.wrappingLabel("", size: 11)
     private let statusLabel = UI.label(L("pref.appliedImmediatelyNoRestartNeeded"), size: 10,
                                        color: .secondaryLabelColor)
+    /// 「提权与安全」段的状态行（助手是否就绪 / 硬件是否支持）
+    private let touchIDStatusLabel = UI.wrappingLabel("", size: 10,
+                                                      color: .secondaryLabelColor)
+    /// 已开启但助手缺失 / 未运行时出现：重新安装（不动偏好本身）
+    private let touchIDRepairButton = NSButton(frame: .zero)
     private var l10nObserver: NSObjectProtocol?
 
     init() {
@@ -138,16 +167,32 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
         // 之前 clamp 会被恢复出来的旧尺寸覆盖。
         clampToMinSize()
         window?.makeKeyAndOrderFront(nil)
+        // frame autosave 的恢复是异步的（在首次 orderFront 之后才落地会
+        // 把刚 clamp 过的宽度覆盖回去）。再补一次，确保「左侧竖排」的
+        // 760pt 下限不被旧 frame 顶掉。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            self?.clampToMinSize()
+        }
         AppActivate.front()
     }
 
     /// setFrameAutosaveName 会恢复上次的 frame；旧版本可能存过比 minSize
     /// 还窄的尺寸（当时一行式布局横向溢出，用户把窗口拉得很窄）。恢复后
     /// 再套一次下限，避免每次打开都是「一列文字 + 大量竖向滚动」。
+    /// 左侧竖排时页签条吃掉约 120pt，[标题 + 控件] 两列在 560pt 下会把
+    /// 说明文字压成每行十几个字、复选框标题还会被截尾。所以该模式下把
+    /// 窗口下限抬到 760pt（切回横向再降回来）。
+    private var effectiveMinSize: NSSize {
+        let wide = Preferences.shared.tabsStyle == .left
+        return NSSize(width: wide ? 760 : Self.minWindowSize.width,
+                      height: Self.minWindowSize.height)
+    }
+
     private func clampToMinSize() {
         guard let w = window else { return }
-        let minSize = Self.minWindowSize
+        let minSize = effectiveMinSize
         // contentViewController 赋值等路径可能改写 window.minSize，这里补回。
+        rootMinWidth?.constant = minSize.width
         w.minSize = minSize
         w.contentMinSize = minSize
         var f = w.frame
@@ -164,6 +209,10 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
         if let v = w.contentView { L10n.relocalize(v) }
         // 名称预览是动态拼接的，重新生成一次
         syncNamePreview()
+        // Touch ID 状态行同样是动态文案
+        refreshTouchIDStatus()
+        // 页签标题也按新语言重建（宽度会变，条形要重排）
+        applyTabStyle(force: true)
     }
 
     /// 语言下拉按枚举重建一次。
@@ -200,6 +249,9 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
         scroll.drawsBackground = false
         scroll.borderType = .noBorder
         scroll.translatesAutoresizingMaskIntoConstraints = false
+        // 翻转后内容始终从顶部开始：某一页比窗口矮时（例如「搜索」只有
+        // 四项）不会整页掉到底部。
+        scroll.contentView = FlippedClipView()
         scroll.documentView = document
         NSLayoutConstraint.activate([
             document.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor,
@@ -215,39 +267,112 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
     private func buildUI() {
         guard let window = self.window else { return }
 
-        makeStack(content)
-        makeStack(styleContent)
-        makeStack(signalContent)
-        activeStack = content
+        paneStacks = Pane.allCases.map { _ in
+            let s = NSStackView()
+            makeStack(s)
+            return s
+        }
+        buildPanes()
 
-        // ---- 通用页：采集上限（下发给 C 层） ----
-        section(L("pref.collectionLimits"), L("pref.takesEffectOnTheNext"))
-        number(.maxRegions,   L("pref.vmRegionCap"), unit: L("pref.items"),
-               hint: L("pref.maxVmRegionsEnumeratedPer"))
-        number(.pipeCacheMs,  L("pref.pipeIndexCache"), unit: "ms",
-               hint: L("pref.howLongTheSystemWide"))
-        number(.argvMaxKB,    L("pref.commandLineBuffer"), unit: "KiB",
-               hint: L("pref.upperBoundForTheKern"))
-        number(.fdMaxMB,      L("pref.fdListBuffer"), unit: "MiB",
-               hint: L("pref.upperBoundForTheProc"))
-        number(.smcMaxKeys,   L("pref.smcKeyCap"), unit: L("pref.keys"),
-               hint: L("pref.upperBoundForSmcKey"))
+        paneContainer.translatesAutoresizingMaskIntoConstraints = false
+        paneScrolls = paneStacks.map { makeScroll(document: $0) }
+        for v in paneScrolls {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            paneContainer.addSubview(v)
+            NSLayoutConstraint.activate([
+                v.leadingAnchor.constraint(equalTo: paneContainer.leadingAnchor),
+                v.trailingAnchor.constraint(equalTo: paneContainer.trailingAnchor),
+                v.topAnchor.constraint(equalTo: paneContainer.topAnchor),
+                v.bottomAnchor.constraint(equalTo: paneContainer.bottomAnchor),
+            ])
+        }
 
-        // ---- 通用页：详情 / 缓存 ----
-        section(L("pref.detailsCache"), L("pref.withPerTabLazyLoading"))
-        number(.treeMaxDepth, L("pref.maxProcessTreeDepth"), unit: L("pref.layer"),
-               hint: L("pref.recursionGuardForCyclicPpid"))
-        number(.historyPoints, L("pref.historyPoints"), unit: L("pref.pts"),
-               hint: L("pref.numberOfSamplesRetainedBy"))
-        number(.dynamicTTL,   L("pref.dynamicTabCache"), unit: L("pref.s"),
-               hint: L("pref.openFilesNetworkFileMonitoring"))
-        number(.ttyTTL,       L("pref.ttyTabCache"), unit: L("pref.s2"), hint: L("pref.controllingTerminalAndSessionInfo"))
-        number(.staticTTL,    L("pref.staticTabCache"), unit: L("pref.s3"),
-               hint: L("pref.environmentImagesMappingsSigningMach"))
-        number(.sampleSeconds, L("pref.sampleDuration"), unit: L("pref.s4"),
-               hint: L("pref.durationOfAUsrBin"))
+        tabBar.translatesAutoresizingMaskIntoConstraints = false
+        tabBar.onSelect = { [weak self] index in self?.applyTab(index) }
 
-        // ---- 通用页：刷新与默认视图 ----
+        // ---- 底部（所有页共用） ----
+        footer.orientation = .horizontal
+        footer.spacing = 10
+        footer.distribution = .fill
+        let resetBtn = UI.button(L("pref.restoreDefaults"), target: self,
+                                 action: #selector(resetClicked))
+        let doneBtn = UI.button(L("pref.done"), target: self,
+                                action: #selector(doneClicked))
+        doneBtn.keyEquivalent = "\r"
+        statusLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        footer.addView(statusLabel, in: .leading)
+        footer.addView(resetBtn, in: .trailing)
+        footer.addView(doneBtn, in: .trailing)
+        footer.translatesAutoresizingMaskIntoConstraints = false
+        footer.edgeInsets = NSEdgeInsets(top: 6, left: 14, bottom: 8, right: 14)
+
+        // 直接用 contentView，不用 contentViewController：后者会按 root.view
+        // 的 fittingSize 反过来把窗口收窄（实测 660 → 412），而偏好行的
+        // 说明文字需要窗口宽度才能排成两行。
+        // 显式给一个非零 frame：contentView 为 zero frame 时，首次布局会
+        // 把窗口收缩到子视图的最小 fittingSize。
+        let rootView = NSView(frame: window.contentLayoutRect)
+        rootView.autoresizingMask = [.width, .height]
+        window.contentView = rootView
+        // 首次布局时 AppKit 会把窗口收到内容的最小 fittingSize（412pt）。
+        // 在 contentView 上加一条 required 下限，Auto Layout 就不会允许
+        // 窗口比 560pt 更窄。
+        // 直接改这条约束的 constant（而不是只改 window.minSize）：首次布局
+        // 时 AppKit 会把窗口收成 contentView 的 fittingSize，光设
+        // contentMinSize 挡不住；把内容的最小宽度本身抬上去才稳。
+        rootMinWidth = rootView.widthAnchor.constraint(
+            greaterThanOrEqualToConstant: Self.minWindowSize.width)
+        rootMinWidth?.isActive = true
+        rootView.heightAnchor.constraint(
+            greaterThanOrEqualToConstant: 420).isActive = true
+        rootView.addSubview(tabBar)
+        rootView.addSubview(paneContainer)
+        rootView.addSubview(footer)
+        NSLayoutConstraint.activate([
+            footer.leadingAnchor.constraint(equalTo: rootView.leadingAnchor),
+            footer.trailingAnchor.constraint(equalTo: rootView.trailingAnchor),
+            footer.bottomAnchor.constraint(equalTo: rootView.bottomAnchor),
+            footer.heightAnchor.constraint(equalToConstant: 38),
+        ])
+
+        applyTabStyle(force: true)
+        applyTab(0)
+        reloadValues()
+        // 工具栏 / 全局搜索窗口切换「.*」时，本窗口的 checkbox 也要跟上
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(searchModeChanged(_:)),
+            name: .searchModeDidChange, object: nil)
+        // 在本窗口里改「页签排布」要立刻换布局（也要让检查器跟着变）
+        NotificationCenter.default.addObserver(
+            forName: .preferencesDidChange, object: nil, queue: .main) {
+                [weak self] _ in self?.applyTabStyle()
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // 分页内容
+    // -----------------------------------------------------------------
+
+    private func buildPanes() {
+        activeStack = paneStacks[Pane.general.rawValue]
+        buildGeneralTab()
+        activeStack = paneStacks[Pane.interface.rawValue]
+        buildInterfaceTab()
+        activeStack = paneStacks[Pane.data.rawValue]
+        buildDataTab()
+        activeStack = paneStacks[Pane.search.rawValue]
+        buildSearchTab()
+        activeStack = paneStacks[Pane.privilege.rawValue]
+        buildPrivilegeTab()
+        activeStack = paneStacks[Pane.appearance.rawValue]
+        buildStyleTab()
+        activeStack = paneStacks[Pane.signals.rawValue]
+        buildSignalTab()
+        activeStack = nil
+    }
+
+    /// 通用：刷新与默认视图 + 排序与行为
+    private func buildGeneralTab() {
         section(L("pref.refreshDefaultView"), L("pref.appliedToTheMainWindow"))
         popup(.refreshInterval, L("pref.processListRefresh"), [L("pref.s5"), L("pref.s6"), L("pref.s7"), L("pref.s8")],
               hint: L("pref.periodicRefreshIntervalOfThe"))
@@ -263,7 +388,38 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
               hint: L("pref.offStartsInFlatList"))
         check(.defaultAscending, L("pref.defaultAscending"), hint: L("pref.initialDirectionForTheDefault"))
 
-        // ---- 通用页：进程名称显示 ----
+        section(L("pref.sortingBehavior"), L("pref.threeStateHeaderCycleClick"))
+        check(.sortAutoFlat, L("pref.switchToFlatListWhen"),
+              hint: L("pref.inTreeModeSortingOnly"))
+        check(.sortCycleToTree, L("pref.thirdClickOnAColumn"),
+              hint: L("pref.offGivesTheUsualTwo"))
+        check(.showSortIndicator, L("pref.showSortDirectionTriangleIn"),
+              hint: L("pref.customDrawnTriangleNoSystem"))
+        check(.lazyDetailLoading, L("pref.lazyPerTabDetailLoading"),
+              hint: L("pref.offRestoresTheOldCollect"))
+        check(.startPerfSampler, L("pref.startPerformanceSamplingAtLaunch"),
+              hint: L("pref.offStartsSamplingOnlyWhen"))
+        check(.refreshInvalidatesDetail, L("pref.rAlsoInvalidatesDetailCache"),
+              hint: L("pref.offMakesRRefreshOnly"))
+    }
+
+    /// 界面：语言 / 提示行 / 页签排布 + 进程名称显示
+    private func buildInterfaceTab() {
+        section(L("pref.interface"), L("pref.uiLanguageForMenusWindow"))
+        check(.showDetailHints, L("pref.showHintRowsInDetail"),
+              hint: L("pref.hideExplanatoryHintRowsAppended"))
+        popup(.language, L("pref.language"),
+              L10n.Language.allCases.map { $0.title },
+              hint: L("pref.followSystemSimplifiedChineseEnglish"))
+        // 两种布局：左侧竖排（默认）/ 经典（横向多行）。原来的「每行几个」
+        // 只对横向有意义，拆成独立一行、只在经典布局下可改。
+        popup(.tabsLayout, L("pref.tabsLayout"),
+              [L("pref.tabsLayoutLeft"), L("pref.tabsLayoutClassic")],
+              hint: L("pref.tabsLayoutHint"))
+        popup(.classicPerRow, L("pref.classicPerRow"),
+              [L("pref.tabsLayoutAuto")] + (2...15).map { "\($0)" },
+              hint: L("pref.classicPerRowHint"))
+
         section(L("pref.processNameDisplay"),
                 L("pref.helpersXpcServicesAndRenderers"))
         check(.showRawNameWithBundle, L("pref.showRawProcessNameAlongside"),
@@ -287,35 +443,44 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
         addFullWidth(namePreviewLabel)
         addFullWidth(makeHintRow(L("pref.previewHowTheNameColumn")))
         syncNamePreview()
+    }
 
-        // ---- 通用页：界面（提示行 / 语言） ----
-        section(L("pref.interface"), L("pref.uiLanguageForMenusWindow"))
-        check(.showDetailHints, L("pref.showHintRowsInDetail"),
-              hint: L("pref.hideExplanatoryHintRowsAppended"))
-        popup(.language, L("pref.language"),
-              L10n.Language.allCases.map { $0.title },
-              hint: L("pref.followSystemSimplifiedChineseEnglish"))
-        // 自动 = 0；其余项直接是「每行个数」（2…14）
-        popup(.inspectorTabsPerRow, L("pref.inspectorTabsPerRow"),
-              [L("pref.autoByWidth")] + (2...14).map { "\($0)" },
-              hint: L("pref.inspectorTabsPerRowHint"))
+    /// 数据与缓存：采集上限 + 详情缓存 + 设备树 / 扩展
+    private func buildDataTab() {
+        section(L("pref.collectionLimits"), L("pref.takesEffectOnTheNext"))
+        number(.maxRegions,   L("pref.vmRegionCap"), unit: L("pref.items"),
+               hint: L("pref.maxVmRegionsEnumeratedPer"))
+        number(.pipeCacheMs,  L("pref.pipeIndexCache"), unit: "ms",
+               hint: L("pref.howLongTheSystemWide"))
+        number(.argvMaxKB,    L("pref.commandLineBuffer"), unit: "KiB",
+               hint: L("pref.upperBoundForTheKern"))
+        number(.fdMaxMB,      L("pref.fdListBuffer"), unit: "MiB",
+               hint: L("pref.upperBoundForTheProc"))
+        number(.smcMaxKeys,   L("pref.smcKeyCap"), unit: L("pref.keys"),
+               hint: L("pref.upperBoundForSmcKey"))
 
-        // ---- 通用页：排序与行为 ----
-        section(L("pref.sortingBehavior"), L("pref.threeStateHeaderCycleClick"))
-        check(.sortAutoFlat, L("pref.switchToFlatListWhen"),
-              hint: L("pref.inTreeModeSortingOnly"))
-        check(.sortCycleToTree, L("pref.thirdClickOnAColumn"),
-              hint: L("pref.offGivesTheUsualTwo"))
-        check(.showSortIndicator, L("pref.showSortDirectionTriangleIn"),
-              hint: L("pref.customDrawnTriangleNoSystem"))
-        check(.lazyDetailLoading, L("pref.lazyPerTabDetailLoading"),
-              hint: L("pref.offRestoresTheOldCollect"))
-        check(.startPerfSampler, L("pref.startPerformanceSamplingAtLaunch"),
-              hint: L("pref.offStartsSamplingOnlyWhen"))
-        check(.refreshInvalidatesDetail, L("pref.rAlsoInvalidatesDetailCache"),
-              hint: L("pref.offMakesRRefreshOnly"))
+        section(L("pref.detailsCache"), L("pref.withPerTabLazyLoading"))
+        number(.treeMaxDepth, L("pref.maxProcessTreeDepth"), unit: L("pref.layer"),
+               hint: L("pref.recursionGuardForCyclicPpid"))
+        number(.historyPoints, L("pref.historyPoints"), unit: L("pref.pts"),
+               hint: L("pref.numberOfSamplesRetainedBy"))
+        number(.dynamicTTL,   L("pref.dynamicTabCache"), unit: L("pref.s"),
+               hint: L("pref.openFilesNetworkFileMonitoring"))
+        number(.ttyTTL,       L("pref.ttyTabCache"), unit: L("pref.s2"), hint: L("pref.controllingTerminalAndSessionInfo"))
+        number(.staticTTL,    L("pref.staticTabCache"), unit: L("pref.s3"),
+               hint: L("pref.environmentImagesMappingsSigningMach"))
+        number(.sampleSeconds, L("pref.sampleDuration"), unit: L("pref.s4"),
+               hint: L("pref.durationOfAUsrBin"))
 
-        // ---- 通用页：搜索 / 全局搜索 ----
+        section(L("pref.devicesExtensions"), L("pref.devicesExtensionsHint"))
+        number(.ioregMaxNodes, L("pref.ioregMaxNodes"),
+               unit: L("pref.items"), hint: L("pref.ioregMaxNodesHint"))
+        check(.scanAppExtensions, L("pref.scanAppExtensions"),
+              hint: L("pref.scanAppExtensionsHint"))
+    }
+
+    /// 搜索
+    private func buildSearchTab() {
         section(L("pref.search"), L("pref.searchHint"))
         check(.searchUseRegex, L("pref.regexSearchMode"),
               hint: L("pref.regexSearchModeHint"))
@@ -323,111 +488,125 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
               hint: L("pref.globalSearchHeavyPagesHint"))
         number(.globalSearchMaxRows, L("pref.globalSearchMaxRows"),
                unit: L("pref.rows"), hint: L("pref.globalSearchMaxRowsHint"))
+    }
 
-        // ---- 通用页：设备树 / 扩展列表 ----
-        section(L("pref.devicesExtensions"), L("pref.devicesExtensionsHint"))
-        number(.ioregMaxNodes, L("pref.ioregMaxNodes"),
-               unit: L("pref.items"), hint: L("pref.ioregMaxNodesHint"))
-        check(.scanAppExtensions, L("pref.scanAppExtensions"),
-              hint: L("pref.scanAppExtensionsHint"))
-
-        // ---- 样式页 ----
-        activeStack = styleContent
-        buildStyleTab()
-        // ---- 信号页 ----
-        activeStack = signalContent
-        buildSignalTab()
-        activeStack = content
-
-        // ---- 底部（放在 Tab 外面，两页共用） ----
-        let footer = NSStackView()
-        footer.orientation = .horizontal
-        footer.spacing = 10
-        footer.distribution = .fill
-        let resetBtn = UI.button(L("pref.restoreDefaults"), target: self,
-                                 action: #selector(resetClicked))
-        let doneBtn = UI.button(L("pref.done"), target: self,
-                                action: #selector(doneClicked))
-        doneBtn.keyEquivalent = "\r"
-        statusLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        footer.addView(statusLabel, in: .leading)
-        footer.addView(resetBtn, in: .trailing)
-        footer.addView(doneBtn, in: .trailing)
-        footer.translatesAutoresizingMaskIntoConstraints = false
-        footer.edgeInsets = NSEdgeInsets(top: 6, left: 14, bottom: 8, right: 14)
-
-        // ---- 页签切换：NSSegmentedControl + 三个常驻 NSScrollView ----
-        // 不用 NSTabView / NSTabViewItem（macOS 26 上该类的视图托管路径有
-        // 内部断言，且本项目主窗口已踩过 NSTabViewController 的 delegate 崩溃）。
-        // 三个 pane 全部铺满同一个容器，切换只改 isHidden，没有 index 越界、
-        // 没有 delegate、没有 item 插入时的 AppKit 内部重排。
-        let segment = NSSegmentedControl(
-            labels: [L("pref.general"), L("pref.appearance"), L("pref.signals")],
-            trackingMode: .selectOne,
-            target: self,
-            action: #selector(tabChanged(_:)))
-        segment.font = NSFont.systemFont(ofSize: 12)
-        segment.selectedSegment = 0
-        segment.translatesAutoresizingMaskIntoConstraints = false
-        self.tabSegment = segment
-
-        let container = NSView()
-        container.translatesAutoresizingMaskIntoConstraints = false
-        panes = [makeScroll(document: content),
-                 makeScroll(document: styleContent),
-                 makeScroll(document: signalContent)]
-        for v in panes {
-            v.translatesAutoresizingMaskIntoConstraints = false
-            container.addSubview(v)
-            NSLayoutConstraint.activate([
-                v.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-                v.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-                v.topAnchor.constraint(equalTo: container.topAnchor),
-                v.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            ])
+    /// 提权与安全
+    private func buildPrivilegeTab() {
+        section(L("pref.privilege"), L("pref.privilegeHint"))
+        check(.touchIDAuth, L("pref.touchIDAuth"), hint: L("pref.touchIDAuthHint"))
+        // 这一项不是纯偏好：勾选会安装 root LaunchDaemon，去掉会卸载，
+        // 所以接管动作、不走通用的 toggleChanged。
+        if let cb = checkboxes[Tag.touchIDAuth.rawValue] {
+            cb.target = self
+            cb.action = #selector(touchIDToggled(_:))
         }
-        applyTab(0)
+        touchIDStatusLabel.font = NSFont.systemFont(ofSize: 10)
+        touchIDStatusLabel.textColor = .secondaryLabelColor
+        touchIDStatusLabel.lineBreakMode = .byWordWrapping
+        // 与其它行的说明文字一样，从控件列开始（而不是贴着窗口左边）
+        let spacer = NSView()
+        spacer.translatesAutoresizingMaskIntoConstraints = false
+        spacer.widthAnchor.constraint(equalToConstant: Metric.labelWidth).isActive = true
+        touchIDRepairButton.title = L("priv.touchIDRepair")
+        touchIDRepairButton.bezelStyle = .rounded
+        touchIDRepairButton.controlSize = .small
+        touchIDRepairButton.font = NSFont.systemFont(ofSize: 10)
+        touchIDRepairButton.target = self
+        touchIDRepairButton.action = #selector(repairTouchIDClicked(_:))
+        touchIDRepairButton.setContentHuggingPriority(.defaultHigh,
+                                                      for: .horizontal)
+        let statusRow = NSStackView(views: [spacer, touchIDStatusLabel,
+                                            touchIDRepairButton])
+        statusRow.orientation = .horizontal
+        statusRow.spacing = Metric.gap
+        statusRow.alignment = .top
+        addFullWidth(statusRow)
+        refreshTouchIDStatus()
+    }
 
-        // 直接用 contentView，不用 contentViewController：后者会按 root.view
-        // 的 fittingSize 反过来把窗口收窄（实测 660 → 412），而偏好行的
-        // 说明文字需要窗口宽度才能排成两行。
-        // 显式给一个非零 frame：contentView 为 zero frame 时，首次布局会
-        // 把窗口收缩到子视图的最小 fittingSize。
-        let rootView = NSView(frame: window.contentLayoutRect)
-        rootView.autoresizingMask = [.width, .height]
-        window.contentView = rootView
-        // 首次布局时 AppKit 会把窗口收到内容的最小 fittingSize（412pt）。
-        // 在 contentView 上加一条 required 下限，Auto Layout 就不会允许
-        // 窗口比 560pt 更窄。
-        rootView.widthAnchor.constraint(
-            greaterThanOrEqualToConstant: Self.minWindowSize.width).isActive = true
-        rootView.heightAnchor.constraint(
-            greaterThanOrEqualToConstant: 420).isActive = true
-        rootView.addSubview(segment)
-        rootView.addSubview(container)
-        rootView.addSubview(footer)
-        NSLayoutConstraint.activate([
-            segment.topAnchor.constraint(equalTo: rootView.topAnchor, constant: 10),
-            segment.centerXAnchor.constraint(equalTo: rootView.centerXAnchor),
-            segment.widthAnchor.constraint(greaterThanOrEqualToConstant: 260),
-            segment.heightAnchor.constraint(equalToConstant: 26),
+    // -----------------------------------------------------------------
+    // 页签条
+    // -----------------------------------------------------------------
 
-            container.leadingAnchor.constraint(equalTo: rootView.leadingAnchor),
-            container.trailingAnchor.constraint(equalTo: rootView.trailingAnchor),
-            container.topAnchor.constraint(equalTo: segment.bottomAnchor, constant: 10),
-            container.bottomAnchor.constraint(equalTo: footer.topAnchor),
+    /// 「每行几个」只对经典（横向）布局有意义；左侧竖排时置灰，
+    /// 免得用户改了一个当前不生效的值还以为没反应。
+    private func syncTabLayoutControls() {
+        let classic = Preferences.shared.tabsStyle != .left
+        popups[Tag.classicPerRow.rawValue]?.isEnabled = classic
+    }
 
-            footer.leadingAnchor.constraint(equalTo: rootView.leadingAnchor),
-            footer.trailingAnchor.constraint(equalTo: rootView.trailingAnchor),
-            footer.bottomAnchor.constraint(equalTo: rootView.bottomAnchor),
-            footer.heightAnchor.constraint(equalToConstant: 38),
-        ])
+    /// 横向折行 / 左侧竖排两套约束之间切换（与检查器同一实现思路）。
+    private func applyTabStyle(force: Bool = false) {
+        guard let root = window?.contentView else { return }
+        let mode = Preferences.shared.tabStripMode
+        if !force, let m = appliedMode, m == mode { return }
+        appliedMode = mode
 
-        reloadValues()
-        // 工具栏 / 全局搜索窗口切换「.*」时，本窗口的 checkbox 也要跟上
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(searchModeChanged(_:)),
-            name: .searchModeDidChange, object: nil)
+        NSLayoutConstraint.deactivate(barHorizontal)
+        NSLayoutConstraint.deactivate(barVertical)
+        barWidth?.isActive = false
+        barWidth = nil
+
+        tabBar.configure(titles: Pane.allCases.map { L($0.titleKey) }, mode: mode)
+        tabBar.select(currentPane)
+
+        // 窗口下限跟着模式走；已经比下限窄就当场长到下限
+        if let w = window {
+            let minSize = effectiveMinSize
+            rootMinWidth?.constant = minSize.width
+            w.minSize = minSize
+            w.contentMinSize = minSize
+            if w.frame.width < minSize.width {
+                var f = w.frame
+                f.size.width = minSize.width
+                w.setFrame(f, display: true)
+            }
+        }
+
+        switch mode {
+        case .vertical:
+            let w = tabBar.widthAnchor.constraint(equalToConstant: tabBar.columnWidth)
+            barWidth = w
+            barVertical = [
+                tabBar.topAnchor.constraint(equalTo: root.topAnchor, constant: 10),
+                tabBar.leadingAnchor.constraint(equalTo: root.leadingAnchor,
+                                                constant: 8),
+                tabBar.bottomAnchor.constraint(equalTo: footer.topAnchor,
+                                               constant: -4),
+                w,
+                paneContainer.leadingAnchor.constraint(equalTo: tabBar.trailingAnchor,
+                                                       constant: 8),
+                paneContainer.topAnchor.constraint(equalTo: root.topAnchor,
+                                                  constant: 10),
+                paneContainer.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+                paneContainer.bottomAnchor.constraint(equalTo: footer.topAnchor),
+            ]
+            NSLayoutConstraint.activate(barVertical)
+
+        case .horizontal:
+            barHorizontal = [
+                tabBar.topAnchor.constraint(equalTo: root.topAnchor, constant: 10),
+                tabBar.leadingAnchor.constraint(equalTo: root.leadingAnchor,
+                                                constant: 12),
+                tabBar.trailingAnchor.constraint(equalTo: root.trailingAnchor,
+                                                 constant: -12),
+                paneContainer.topAnchor.constraint(equalTo: tabBar.bottomAnchor,
+                                                  constant: 10),
+                paneContainer.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+                paneContainer.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+                paneContainer.bottomAnchor.constraint(equalTo: footer.topAnchor),
+            ]
+            NSLayoutConstraint.activate(barHorizontal)
+        }
+    }
+
+    /// 切页：所有 pane 常驻，只改 isHidden —— 没有 NSTabView、没有 delegate、
+    /// 没有 index 越界（本项目在 macOS 26 上踩过 NSTabView 的内部断言）。
+    private func applyTab(_ index: Int) {
+        guard index >= 0, index < paneScrolls.count else { return }
+        currentPane = index
+        for (i, v) in paneScrolls.enumerated() { v.isHidden = (i != index) }
+        tabBar.select(index)
     }
 
     @objc private func searchModeChanged(_ n: Notification) {
@@ -602,21 +781,8 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
 
     /// 供菜单里的「配置菜单信号…」直接跳到本页
     func selectSignalTab() {
-        tabSegment?.selectedSegment = 2
-        applyTab(2)
+        applyTab(Pane.signals.rawValue)
         reloadValues()
-    }
-
-    @objc private func tabChanged(_ sender: NSSegmentedControl) {
-        applyTab(sender.selectedSegment)
-    }
-
-    /// 三个 pane 常驻，切换只改 isHidden。越界直接忽略，不做任何下标取值。
-    private func applyTab(_ index: Int) {
-        guard index >= 0, index < panes.count else { return }
-        for (i, v) in panes.enumerated() {
-            v.isHidden = (i != index)
-        }
     }
 
     private func groupLabel(_ text: String) {
@@ -698,6 +864,10 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
         let box = NSStackView()
         box.orientation = .vertical
         box.spacing = 2
+        // 默认 alignment 是 centerX：标题与说明会各自居中，看着像整段
+        // 漂浮在页中间。统一左对齐，和下面的行起点齐平。
+        box.alignment = .leading
+        t.alignment = .left
         box.addView(t, in: .bottom)
         box.addView(h, in: .bottom)
         let wrap = NSView()
@@ -869,6 +1039,7 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
             (.searchUseRegex, p.searchUseRegex),
             (.globalSearchHeavyPages, p.globalSearchHeavyPages),
             (.scanAppExtensions, p.scanAppExtensions),
+            (.touchIDAuth, p.touchIDAuth),
         ]
         for (tag, v) in checks {
             checkboxes[tag.rawValue]?.state = v ? .on : .off
@@ -886,9 +1057,14 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
             sortKeys.firstIndex(of: p.defaultSortKey) ?? 0)
         popups[Tag.rawNameStyle.rawValue]?.selectItem(at: p.rawNameStyle.rawValue)
         popups[Tag.language.rawValue]?.selectItem(at: p.language.rawValue)
-        // 0（自动）→ 第 0 项；N（每行个数）→ 第 N-1 项
-        let tabs = p.detailTabsPerRow
-        popups[Tag.inspectorTabsPerRow.rawValue]?.selectItem(at: tabs == 0 ? 0 : tabs - 1)
+        // 布局：0 = 左侧竖排，1 = 经典（横向）
+        popups[Tag.tabsLayout.rawValue]?.selectItem(
+            at: p.tabsStyle == .left ? 0 : 1)
+        // 经典每行：0 = 自动折行；N 个 → 第 N-1 项
+        let perRow = p.detailTabsPerRow
+        popups[Tag.classicPerRow.rawValue]?.selectItem(
+            at: perRow == 0 ? 0 : min(max(perRow, 2), 15) - 1)
+        syncTabLayoutControls()
 
         syncColorControls()
         syncSignalControls()
@@ -1040,6 +1216,146 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
         applied()
     }
 
+    // -----------------------------------------------------------------
+    // Touch ID 提权（安装 / 卸载 root 辅助工具）
+    // -----------------------------------------------------------------
+
+    @objc private func touchIDToggled(_ sender: NSButton) {
+        let want = sender.state == .on
+        if !want { disableTouchID(sender); return }
+        enableTouchID(sender)
+    }
+
+    /// 开关的语义：**只有真的装好/卸干净了才动偏好**。
+    /// 之前是先写偏好、失败再回滚，于是出现「装失败了但开关还亮着」——
+    /// 界面说已启用、提权却仍在输密码，用户无从判断到底成没成。
+    private func enableTouchID(_ sender: NSButton) {
+        let (ok, title) = TouchIDAuth.availability()
+        guard ok else {
+            sender.state = .off
+            let a = NSAlert()
+            a.messageText = L("priv.touchIDUnavailableTitle")
+            a.informativeText = L("priv.touchIDUnavailableBody")
+            a.addButton(withTitle: L("app.ok"))
+            a.runModal()
+            return
+        }
+
+        let confirm = NSAlert()
+        confirm.messageText = L("priv.touchIDInstallTitle", title)
+        confirm.informativeText = L("priv.touchIDInstallBody", title)
+        confirm.addButton(withTitle: L("priv.touchIDInstallAction"))
+        confirm.addButton(withTitle: L("app.cancel"))
+        guard confirm.runModal() == .alertFirstButtonReturn else {
+            sender.state = .off
+            return
+        }
+
+        sender.isEnabled = false
+        sender.state = .on
+        touchIDStatusLabel.stringValue = L("priv.touchIDInstalling")
+        // 安装要经 Authorization Services 提权（这一次仍是密码），
+        // 走后台避免把偏好窗口冻住。
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = TouchIDHelper.install()
+            DispatchQueue.main.async {
+                sender.isEnabled = true
+                if result.ok {
+                    sender.state = .on
+                } else {
+                    // 失败就把开关弹回 off，并尝试收拾残留（文件已装但守护
+                    // 进程没起来时「重新安装」按钮仍然可用，所以只把偏好关掉）。
+                    sender.state = .off
+                    self?.presentHelperError(L("priv.touchIDInstallFailed"),
+                                             result.message)
+                }
+                self?.refreshTouchIDStatus()
+                NotificationCenter.default.post(
+                    name: .vantagePrivilegeDidChange, object: nil)
+            }
+        }
+    }
+
+    private func disableTouchID(_ sender: NSButton) {
+        // 既没装助手、也没有机器级标记：没什么可拆的，直接关掉开关。
+        // （只判断 isInstalled 不够：助手被手动删掉后标记文件还在，
+        //  这时仍需要一次提权把标记清掉，否则开关会「自己弹回来」。）
+        guard TouchIDHelper.isInstalled || TouchIDState.isEnabled else {
+            sender.state = .off
+            refreshTouchIDStatus()
+            return
+        }
+        let confirm = NSAlert()
+        confirm.messageText = L("priv.touchIDUninstallTitle")
+        confirm.informativeText = L("priv.touchIDUninstallBody")
+        confirm.addButton(withTitle: L("priv.touchIDUninstallAction"))
+        confirm.addButton(withTitle: L("app.cancel"))
+        guard confirm.runModal() == .alertFirstButtonReturn else {
+            sender.state = .on     // 取消：偏好没动过，也不用改
+            return
+        }
+        sender.isEnabled = false
+        touchIDStatusLabel.stringValue = L("priv.touchIDUninstalling")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = TouchIDHelper.uninstall()
+            DispatchQueue.main.async {
+                sender.isEnabled = true
+                if result.ok {
+                    sender.state = .off
+                } else {
+                    // 卸载失败：助手还在，偏好就得保持 on，否则界面与
+                    // 实际状态不一致（下次提权还会走指纹）
+                    sender.state = .on
+                    self?.presentHelperError(L("priv.touchIDUninstallFailed"),
+                                             result.message)
+                }
+                self?.refreshTouchIDStatus()
+                NotificationCenter.default.post(
+                    name: .vantagePrivilegeDidChange, object: nil)
+            }
+        }
+    }
+
+    /// 「重新安装」：不改开关的意图，只重跑一次安装流程。
+    /// 成功即视为「已启用」（用户点它的目的就是把指纹修好）。
+    @objc private func repairTouchIDClicked(_ sender: Any?) {
+        guard touchIDRepairButton.isEnabled else { return }
+        touchIDRepairButton.isEnabled = false
+        touchIDStatusLabel.stringValue = L("priv.touchIDInstalling")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = TouchIDHelper.install()
+            DispatchQueue.main.async {
+                self?.touchIDRepairButton.isEnabled = true
+                if !result.ok {
+                    self?.presentHelperError(
+                        L("priv.touchIDInstallFailed"), result.message)
+                }
+                self?.refreshTouchIDStatus()
+                Privilege.notifyPrivilegeChanged()
+            }
+        }
+    }
+
+    private func presentHelperError(_ title: String, _ body: String) {
+        let a = NSAlert()
+        a.messageText = title
+        a.informativeText = body
+        a.addButton(withTitle: L("app.ok"))
+        a.runModal()
+    }
+
+    /// 状态行：硬件是否支持、助手是否装好、是否连得上
+    private func refreshTouchIDStatus() {
+        touchIDStatusLabel.stringValue = TouchIDAuth.statusText()
+        touchIDStatusLabel.textColor = TouchIDAuth.isActive
+            ? .secondaryLabelColor : .tertiaryLabelColor
+        if let cb = checkboxes[Tag.touchIDAuth.rawValue] {
+            cb.state = Preferences.shared.touchIDAuth ? .on : .off
+        }
+        // 开关是开的、但助手没装 / 版本对不上 / 没在跑时，给一个「重新安装」
+        touchIDRepairButton.isHidden = !TouchIDAuth.needsRepair
+    }
+
     @objc private func popupChanged(_ sender: NSPopUpButton) {
         guard let tag = Tag(rawValue: sender.tag) else { return }
         let i = sender.indexOfSelectedItem
@@ -1061,15 +1377,32 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
             syncNamePreview()
         case .language:
             p.language = L10n.Language(rawValue: i) ?? .system
-            // L10n.language 的 setter 已发 .languageDidChange（菜单重建 +
-            // 各窗口就地刷新），这里只更新本窗口的静态文字
-            relocalizeSelf()
-            // 语言项本身按枚举重建：既保证标题就是当前语言，也能清掉
-            // 旧版本（relocalize 误把 popup 当 button）累积出来的重复项
-            rebuildLanguagePopup()
-        case .inspectorTabsPerRow:
-            // 第 0 项是「自动」，其余项 i 对应每行个数 i+1（2…14）
-            p.detailTabsPerRow = i == 0 ? 0 : i + 1
+            // 界面文字分布在十几个控制器里，其中不少是建视图时取一次、
+            // 原地改不到（自定义绘制 / 缓存数组 / 未加载的页），就地刷新
+            // 一定会留下中英混排。所以改完偏好直接重启一次，保证全一致。
+            if !AppRelaunch.restart() {
+                // root 实例没法用 open 重启：退回就地刷新，并说明原因
+                relocalizeSelf()
+                rebuildLanguagePopup()
+                statusLabel.stringValue = L("pref.languageNeedsRestart")
+            } else {
+                return      // 0.35s 后就退出了，不必再走 applied()
+            }
+        case .tabsLayout:
+            // 0 = 左侧竖排；1 = 经典（沿用已选的每行个数，没选过就自动）
+            p.tabsStyle = i == 0
+                ? .left
+                : (p.detailTabsPerRow > 0 ? .fixed : .auto)
+            syncTabLayoutControls()
+            // 本窗口先自己换布局，别等通知绕一圈（检查器也会收到同一通知）
+            applyTabStyle(force: true)
+        case .classicPerRow:
+            // 0 = 自动折行；i ≥ 1 → 每行 i+1 个
+            p.detailTabsPerRow = i == 0 ? 0 : min(max(i + 1, 2), 15)
+            if p.tabsStyle != .left {
+                p.tabsStyle = p.detailTabsPerRow > 0 ? .fixed : .auto
+            }
+            applyTabStyle(force: true)
         case .colorPreset:
             // 最后一项是「自定义」占位，点它不改任何颜色
             guard i >= 0, i < ColorPreset.allCases.count else {
@@ -1116,12 +1449,19 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
     }
 
     @objc private func resetClicked(_ sender: Any?) {
+        // 恢复默认会把语言改回「跟随系统」；语言变了就重启一次，
+        // 否则界面会停在「一半旧语言、一半新语言」的状态。
+        let oldLanguage = Preferences.shared.language
         Preferences.shared.reset()
         AppColors.shared.resetAll()     // 配色用独立 key 段，reset() 不覆盖
         reloadValues()
+        applyTabStyle(force: true)
         AppContext.shared.store.refreshInterval = Preferences.shared.refreshInterval
         AppContext.shared.mainWindow?.syncToolbar()
         statusLabel.stringValue = L("pref.defaultsRestoredInclColors")
+        if Preferences.shared.language != oldLanguage, AppRelaunch.restart() {
+            return
+        }
     }
 
     @objc private func doneClicked(_ sender: Any?) {

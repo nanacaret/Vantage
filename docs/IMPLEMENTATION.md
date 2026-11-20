@@ -67,7 +67,7 @@ iconutil -c icns Assets/Vantage.iconset -o Vantage.app/Contents/Resources/Vantag
 | 进程右键菜单 | 动态构建：检查器 / 窗口定位 / 退出·强制退出·暂停 / **发送信号 ▸** / Finder 显示 / sample 采样 / 复制 PID·命令行·可执行路径 / 配置菜单信号 |
 | 信号 | 31 个 Darwin 信号可选，默认显示 12 个；右键与主菜单「进程」都有子菜单；可配置发送前确认与危险信号强制确认 |
 
-### 详情面板（13 个 Tab）
+### 详情面板（15 个 Tab）
 1. **概览** — 应用图标、名称、状态、架构、内存/CPU/线程/缺页/系统调用/flags/**TTY 摘要**/task port/路径
 2. **文件** — `PROC_PIDLISTFDS` + `PROC_PIDFDVNODEPATHINFO`，列出 vnode 路径、打开标志
 3. **环境** — `KERN_PROCARGS`，按 `KEY / VALUE` 表格展示
@@ -79,13 +79,25 @@ iconutil -c icns Assets/Vantage.iconset -o Vantage.app/Contents/Resources/Vantag
 9. **TTY** — 控制终端 `e_tdev` → `/dev/ttysNNN`、主/次设备号、PGID / TPGID / jobc、前台或后台、FD 0/1/2 是否被重定向、`PROC_TTY_ONLY` 列出同终端所有进程、窗口大小 / termios 波特率与本地模式
 10. **窗口** — `CGWindowListCopyWindowInfo` 按 owner PID 过滤，列出该进程的**全部**窗口（含最小化 / 其他 Space / 隐藏）：窗口号、标题、层、位置尺寸、屏幕状态与 Z 序、共享状态 / Alpha；**不需要屏幕录制授权**也能看到除标题外的全部字段；**双击条目可把该具体窗口前置激活**（需「辅助功能」授权）
 11. **签名** — `Security.framework` 的 `SecCode` / `SecCodeCopySigningInformation`：Identifier、Team ID、CS flags、Entitlements（递归展开）
-12. **Mach** — `proc_bsdinfo` 标志位、`csops(CS_OPS_STATUS)` 的 CS flags、`task_name_for_pid` + `task_info(TASK_AUDIT_TOKEN)` 的审计令牌、SIP 说明
-13. **命令** — 完整 argv 与可执行路径，可复制
+12. **权限** — 只列「这个进程自己的权限」：① 签名里的 entitlements（声明了什么）；② 用户级 / 系统级 `TCC.db` 的 `access` 表匹配本进程的记录（SQLite3 系统库直接读，`SELECT *` + 列名映射，兼容各版本 schema），状态按 enabled / disabled 呈现，附 auth_reason 与修改时间；没有记录的服务不再逐条占行（右键「授予其他权限」子菜单仍可新增）。**只读系统正式路径**：缺「完全磁盘访问」时显示「未授权」并给出右键入口直达设置面板（系统没有程序化授予 FDA 的接口）。SIP 文件系统保护关闭时，右键 TCC 行可授予 / 撤销：用 SQLite3 库参数绑定写回；非 root 时经 Authorization Services 启动本二进制的隐藏 `--tcc-write` 模式（同一签名，无需额外 helper）。SIP 与 task port 不在本页：task port 见概览页，SIP 移到「系统信息」窗口（⌘⌥I）。
+13. **Mach** — `proc_bsdinfo` 标志位、`csops(CS_OPS_STATUS)` 的 CS flags、`task_name_for_pid` + `task_info(TASK_AUDIT_TOKEN)` 的审计令牌、SIP 说明
+14. **命令** — 完整 argv 与可执行路径，可复制
+
+**系统信息窗口（⌘⌥I）** 承载整机属性：主机名 / 型号 / 芯片 / 内存 / macOS 与内核版本 / 运行时间（`sysctl` + `ProcessInfo`），以及 SIP 活动配置位图：优先 `dlsym` libSystem 的 `csr_get_active_config`（内核位图，逐项可见），拿不到时探测 `/System/Library` 的 `UF_RESTRICTED` 标志；不调用 csrutil。
+
+**启动项窗口（⌘⌥J）** 列出 launchd 的所有落盘任务：`/System/Library/Launch{Daemons,Agents}`（Apple 自带，只读）、`/Library/Launch{Daemons,Agents}`（第三方）、每个用户 `~/Library/LaunchAgents`，以及旧式 `/Library/StartupItems`。
+- 用户家目录走 `getpwent()`：macOS 上它就是 opendirectoryd（DirectoryService）的客户端，能拿到本地账户与绑定目录账户的 `NFSHomeDirectory`；普通权限只扫当前用户，root 时额外展开其他用户。
+- 运行状态不看 plist，而是解析 `launchctl print <domain>` 的 services 表（一次调用覆盖整个域）：系统域 `system`，用户域 `gui/<uid>`。注意列之间是空格 + Tab，flags 可能占多列（`0  M  D  label`），所以按「首列 pid、末列 label」解析；禁用状态另读 `/var/db/com.apple.xpc.launchd/disabled.{system,uid}.plist`。
+- **详情面板**：窗口下半部分是选中条目的 plist 摊平结果（`LaunchItem.detailRows()`）——
+  程序与 `ProgramArguments` 逐条编号、`KeepAlive` / `StartCalendarInterval` / `MachServices`
+  等结构化展开，其余顶层键原样列出。光看列表只知道「有个守护进程叫 com.foo.bar」，
+  要靠这些才能判断它到底做什么。
+- 右键第三方条目：加载 / 卸载（`bootstrap` / `bootout`）、启用 / 禁用（`enable` / `disable`），系统域需 root，统一走 `Privilege.run`；Apple 自带与 `/System` 下的条目只提供「显示 / 复制」，避免误伤系统。
 
 每个 Tab 都有独立过滤框（**检查器里默认收起，⌘F 唤出并聚焦**，主窗口详情区常显）；
 路径格右键可「在 Finder 中显示 / 复制路径」，详见「详情表右键菜单」章节。
 双击进程行可打开**独立检查器窗口**（Activity Monitor 风格）。
-页签统一压到 2 个字，13 个在 1140pt 检查器 / 880pt 主窗口详情区里能完整显示。
+页签统一压到 2 个字；15 个页签由 `TabStripView` 排布。两种布局：**左侧竖排**（默认，Finder 侧边栏式，条目多时可滚动）与 **经典（横向多行）**——后者再分「自动折行」与「每行固定 N 个」。偏好设置页签用同一个控件。
 
 **详情是惰性加载的**：选中进程时只更新「概览 / 命令」（纯快照、零系统调用），
 其余各页在**第一次切到该页时**才采集，结果按 `(pid, 页)` 缓存（FD/socket/pipe 2 秒，
@@ -96,7 +108,7 @@ iconutil -c icns Assets/Vantage.iconset -o Vantage.app/Contents/Resources/Vantag
 自绘面积曲线：CPU 用户态/系统态堆叠、内存占用；另有进程数、线程数、逻辑/物理核、
 物理内存/已用/可用/Wired/已压缩、Swap、1/5/15 分钟负载。
 
-### 性能监控窗口（⌘P，参考 macmon）
+### 性能监控窗口（⌘⌥M，参考 macmon）
 独立窗口，6 张仪表卡片 + 6 组自动缩放曲线 + 数值条 + 数据源状态说明：
 
 | 区块 | 内容 |
@@ -124,9 +136,30 @@ SMC 的 `#KEY` 总数与温度键读数（参与 CPU/GPU 平均的会打 `[CPU]`
 `DispatchQueue` 不保证固定 OS 线程），Swift 侧只按时间戳轮询最新帧并画曲线。
 窗口关闭不停止采样，重新打开时历史曲线不断档。
 
-深色模式、窗口尺寸记忆、原生菜单与快捷键（⌘R 刷新、⌘F 搜索、**⌘⇧F 全局搜索**、
-⌘I 检查器、**⌘P 性能监控**、**⌘⌥B 设备树**、**⌘⌥E 系统扩展**、
-⌥⌘K 退出、⇧⌥⌘K 强制退出等）均已适配。
+深色模式、窗口尺寸记忆、原生菜单与快捷键均已适配，见下面的「菜单结构」。
+
+---
+
+## 菜单结构
+
+一条规则：**每个窗口只在菜单里出现一次**，快捷键按类别固定前缀。
+
+| 菜单 | 内容 | 快捷键约定 |
+|---|---|---|
+| 应用 | 关于 / 偏好设置 / 隐藏 / 退出 | ⌘, ⌘H ⌘Q |
+| 编辑 | 聚焦搜索、撤销重做、剪切复制粘贴全选、复制 PID / 完整命令行 | 系统标准 |
+| 视图 | 刷新、树形 / 列表、过滤、刷新间隔、重置列宽 | ⌘R、⌘1 / ⌘2 |
+| 进程 | 打开检查器、采样、在 Finder 中显示、通过窗口定位、退出 / 强制退出 / 暂停、发送信号 | ⌘I、⇧⌘R、**⌘⌥ + 字母** |
+| 工具 | 全局搜索、窗口列表、系统信息、网络、启动项、设备树、系统扩展、性能监控 | **⌘⌥ + 字母**（全局搜索沿用 ⇧⌘F） |
+| 窗口 | 主窗口 ⌘0、最小化 ⌘M、关闭 ⌘W | 系统标准 |
+
+- 之前「性能监控 / 窗口列表 / 全局搜索 / 设备树 / 系统扩展」同时挂在两个菜单下
+  （文件与窗口、进程与窗口），快捷键也散在 ⌘P / ⇧⌘F / 无 三处；现在统一收敛到一个菜单，
+  所有独立窗口都在「工具」里。
+- `AppDelegate.validateMenuShortcuts` 在启动时遍历整棵菜单树，把重复的
+  「修饰键 + 键」打到 stderr（`NSLog`）。加菜单项时不用人工核对，冲突会自己冒出来。
+- 「编辑 → 聚焦搜索 ⌘F」是上下文相关的：检查器窗口里它是「过滤框显隐」，
+  标题由 `menuNeedsUpdate` 切换（见「详情面板」章节）。
 
 ---
 
@@ -149,7 +182,7 @@ SMC 的 `#KEY` 总数与温度键读数（参与 CPU/GPU 平均的会打 `[CPU]`
 
 ### 全局搜索：先拍快照，再对所有进程取样
 
-主表搜索每 1 秒刷新一次，输入关键字时结果会漂移。独立窗口（**⌘⇧F**，或「编辑 / 窗口」菜单）在打开的那一刻复制一份 `ProcessSnapshot` 数组（值类型），之后**采集与匹配都只针对这份固定快照**：进程退出、新进程启动、主表过滤条件变化都不会改变结果集，快照里能搜到已经退出的进程。
+主表搜索每 1 秒刷新一次，输入关键字时结果会漂移。独立窗口（**⌘⇧F**，或「工具」菜单）在打开的那一刻复制一份 `ProcessSnapshot` 数组（值类型），之后**采集与匹配都只针对这份固定快照**：进程退出、新进程启动、主表过滤条件变化都不会改变结果集，快照里能搜到已经退出的进程。
 
 取样覆盖快照里每一个 PID：
 
@@ -274,6 +307,8 @@ Vantage/
 │       ├── StatsPanelViewController.swift / SparklineView.swift
 │       ├── MainWindowController.swift          # 工具栏 + 嵌套分栏 + 检查器窗口
 │       ├── Localization.swift                  # L() / 语言偏好 / C 层文本 / relocalize
+│       ├── TabStripView.swift                  # 页签条：自动折行 / 每行 N 个 / 左侧竖排
+│       ├── AppRelaunch.swift                   # 语言切换后重启自己（open -n + exit）
 │       ├── L10nTable.swift / L10nKeys.swift    # 生成：内嵌双语表 + key 常量
 │       ├── AppColors.swift / SignalCatalog.swift / SignalMenuUpdater…
 │       ├── ClipboardSupport.swift / ModifierClick.swift / RowTextCopying…
@@ -802,9 +837,27 @@ Sources/Vantage/
 
 `L10n.zh` / `L10n.en` 优先读 `.app/Contents/Resources/<lang>.lproj/Localizable.strings`（`Scripts/build_app.sh` 用 `cp -R Resources/*.lproj` 拷进去），**只读对应语言子目录**，绝不退化到无 subdirectory 的那个（否则 en 会被 zh 覆盖）。读不到就用编译进二进制的 `L10nTable` —— 所以 `swift run`、手工组装的 `.app`、外部编辑 `.strings` 三种情况都能工作。
 
-#### 切换后怎么生效
+#### 切换后怎么生效：写偏好 → 重启
 
-`L()` 每次调用时读当前语言，新建 / 刷新的文字立刻变；已经显示的静态控件由 `.languageDidChange` 补齐：
+**语言切换不再依赖就地刷新。** 界面文字分两类：
+
+1. 渲染时现取 `L(key)` 的（每秒刷新的统计数字、表格数据、C 层双语标记）；
+2. 建视图时取一次、存在控件里或交给自定义绘制的（工具栏按钮、页签标题、
+   列头、自绘排序三角、独立窗口的静态标签、缓存下来的 `[String]` 表头数组）。
+
+第 2 类散落在十几个控制器里，还有几处根本遍历不到（`NSTabView` 里没加载的页、
+`NSSearchField` 的私有子视图、`NSButton.attributedTitle`）。实践中的表现就是
+**切换后一半中文一半英文**：动态文本跟着变了，静态文本留在旧语言。
+
+所以 `PreferencesWindowController.popupChanged` 里改完语言直接
+`AppRelaunch.restart()`：`open -n <bundle>` 起一个新实例，0.35 秒后退出自己。
+一次进程重启后所有字符串都按新语言重新构建，不存在漏点。以 root 运行时不重启
+（`open` 会以 root 在错误会话里拉起新实例），改为就地刷新并提示「下次启动生效」。
+
+> 重启之外，`.languageDidChange` 那套就地刷新仍然保留：系统语言在「跟随系统」
+> 下被改掉时没有偏好事件，重开窗口时靠 `relocalizeSelf()` 兜底。
+
+下面是这套就地刷新的细节（重启路径上不再依赖它，但重开窗口仍会用到）：
 
 1. `AppDelegate` 重建整个主菜单；
 2. 遍历 `NSApp.windows`，把窗口标题、`NSButton` / `NSTextField` / `NSPopUpButton` / `NSSegmentedControl` 的文字和 `NSTableColumn` 表头就地转换；
@@ -812,6 +865,22 @@ Sources/Vantage/
 4. 偏好窗口每次 `showWindow` 都会 `relocalizeSelf()`，静态标签重开即更新。
 
 `convertDisplayed(_:)` 用合并两张表得到的 **值 → key** 反查：中→英、英→中都能转；只对「完整等于某个表值」的字符串动手，动态数值文本不会命中。同一中文值对应多个 key 时取其一，`string(key)` 结果一样。
+
+> **千万别递归进 AppKit 的私有视图。** macOS 26 的 `NSSearchField` 内部长这样：
+>
+> ```
+> NSSearchField
+>   _NSCoreHostingView<AppKitSearchField>
+>     NSCorePlatformViewHost<…SearchFieldAccessoryButtonRepresentable>
+>       NSButton                 ← 放大镜
+>         NSButtonTextField      ← 里面藏着一个 value="search" 的文本
+> ```
+>
+> `relocalize` 是「遍历所有 subview、见到 NSButton 就设 title」的通用写法，
+> 于是给那个内部按钮设了一次 title，把本该隐藏的 `search` 文本显示出来、
+> 同时把占位符往右挤了 20 多 pt —— 表现就是**切换语言后搜索框里多出一个
+> search、文字整体错位**。现在两条规则挡住它：类名以下划线开头的私有视图
+> 直接跳过；`NSSearchField` 只处理它自己的 placeholder，不再往下递归。
 
 #### C 层运行时文本：也是语义 key，不再按中文文本匹配
 
@@ -939,15 +1008,41 @@ Sources/Vantage/
 
 ## 偏好设置（⌘,）
 
-窗口改为 **三个页签**：
+窗口按用途拆成 **七个页签**（原来「通用」一页塞了 9 组、二十多项，滚动条长得离谱）：
 
-- **通用**：可滚动表单（采集上限、缓存、刷新、排序与行为）
-- **样式**：已退出进程高亮 + 全部可定制配色
-- **信号**：勾选哪些信号出现在「发送信号」菜单里 + 发送前确认策略
+| 页签 | 内容 |
+|---|---|
+| 通用 | 刷新与默认视图、排序与行为 |
+| 界面 | 语言、详情提示行、**页签排布（左侧竖排 / 经典；经典下再选每行 N 个）**、进程名称显示 + 实时预览 |
+| 数据与缓存 | 采集上限、详情与缓存 TTL、设备树 / 扩展 |
+| 搜索 | 正则模式、全局搜索重量级页、行数上限 |
+| 提权 | Touch ID 助手安装 / 卸载 / 状态 |
+| 颜色 | 已退出进程高亮 + 全部可定制配色 |
+| 信号 | 勾选哪些信号出现在「发送信号」菜单里 + 发送前确认策略 |
 
-改动均**即时生效、无需重启**，底部「恢复默认」同时清掉通用选项、配色与信号勾选。数值在 Swift 侧与 C 侧各 clamp 一次，填 0 或超大值都不会把采集拖进死循环或 OOM。
+改动均**即时生效**（唯一例外是语言：见上文，会重启一次），底部「恢复默认」同时清掉通用选项、配色与信号勾选。数值在 Swift 侧与 C 侧各 clamp 一次，填 0 或超大值都不会把采集拖进死循环或 OOM。
 
-> **页签切换用 `NSSegmentedControl` + 三个常驻 `NSScrollView`（切 `isHidden`），不碰 `NSTabView` / `NSTabViewItem`。** 主窗口详情 Tab 确实在 macOS 26 踩过 `A TabView managed by a TabViewController cannot have its delegate modified`；但偏好窗口那次无消息的 `SIGTRAP` **与 Tab 实现无关**，真正原因是 `reloadValues()` 字典字面量重复 key（详见本文「兼容性排查」章节与 docs/COMPATIBILITY.md）。这里保留 segmented + `isHidden` 只是因为它更简单：没有 delegate、没有 item 插入、没有 `selectTabViewItem(at:)` 的 index 同步，三个 pane 从窗口创建起就铺满同一个容器，`selectSignalTab()` 只改 `selectedSegment` + `isHidden`。
+页签条就是检查器用的同一个 `TabStripView`：左侧竖排（默认）/ 经典（自动折行或每行
+N 个），在偏好里改完立刻作用到两处窗口。**「每行几个」是独立一行、只在经典布局下可改**：
+它对左侧竖排没有意义，放在一起只会让下拉变得又长又误导。
+
+左侧竖排时窗口下限从 560 抬到 760（页签条占掉约 120pt，不然复选框标题会被截尾）；
+这条下限同时写进 `window.minSize`、`contentMinSize` 和 contentView 的
+`widthAnchor` 约束 —— 只改前两个挡不住 AppKit「首次布局把窗口收成 fittingSize」的行为。
+
+> **竖向页签装得下就不许滚。** `hasVerticalScroller + autohidesScrollers` 只是把
+> 滚动条藏起来，内容不足一屏时仍能拖出橡皮筋回弹。`TabStripView.updateScroller()`
+> 按「条目数 × 行高」和可视高度比较，装得下就 `hasVerticalScroller = false` +
+> `verticalScrollElasticity = .none`。
+
+> **页签切换仍是「常驻 pane + `isHidden`」，不碰 `NSTabView`。** 主窗口详情 Tab 确实在 macOS 26 踩过 `A TabView managed by a TabViewController cannot have its delegate modified`；但偏好窗口那次无消息的 `SIGTRAP` **与 Tab 实现无关**，真正原因是 `reloadValues()` 字典字面量重复 key（详见本文「兼容性排查」章节与 docs/COMPATIBILITY.md）。
+
+> **页签容器要有高度下限。** `DetailTabPaneController` 的根视图原本没有任何
+> 高度约束，页签条在纵向模式下又不提供内在高度 —— 窗口按 `fittingSize` 会缩成
+>「标题栏 + 一行页签」那么高（Left 布局下检查器实测 52pt）。现在根视图带
+> `height ≥ 260`、`width ≥ 360`，检查器窗口另设 `contentMinSize`。
+>
+> **滚动视图用翻转的 clip view。** `NSClipView` 默认不翻转：文档比可视区矮时内容贴底（「搜索」这种只有四行的页会整页掉到窗口底部），纵向页签只有十来个条目时同样会掉到面板最下面。`FlippedClipView` 把原点挪到左上，两种情况都贴顶。
 
 ### 通用页
 
@@ -1400,12 +1495,143 @@ Copy Row
 - **Swift 层 `Privilege`**：
   - `isRoot`（`geteuid() == 0`）
   - `authorize()`：复用同一个 `AuthorizationRef`，系统缓存凭据 5 分钟，
-    连续操作不再弹框；用户取消就丢掉 ref，下次重新申请
-  - `relaunchAsRoot()`：授权后 `exec` 自己（**不传参数**，子进程看 `geteuid()` 判断身份）。
+    连续操作不再弹框；用户取消就丢掉 ref，下次重新申请。
+    **刚用密码授权过（`authAcquiredAt` 在 4 分钟内）时优先复用它，不再要指纹** ——
+    典型场景就是「开启 Touch ID 时装助手刚输过密码，紧接着点以 root 运行又按一次手印」，
+    纯属多余。指纹只在没有新鲜密码凭据时才用（`prefersTouchID`）。
+  - `relaunchAsRoot()`：授权后 `exec` 自己，并带 `--drop-uid <当前用户 uid>`（子进程仍以
+    `geteuid()` 判断身份；这个参数只用于「降权为用户」）。
   - `otherInstanceRunning(exe:excluding:)`：进程表里是否已有同路径的 **uid=0** 实例，
     用来判断「新实例到底起没起来」。
-  - `run(tool:args:)`：已是 root 直接 `Process` 执行；否则 `/bin/sh -c "… 2>&1"`
-    （这个 API 只接 stdout，错误文本要靠 shell 合并）以 root 执行。
+  - `run(tool:args:)`：已是 root 直接 `Process` 执行；否则以 root **直接 exec 工具本身**
+    （argv 原样传入，不经 `/bin/sh`，不存在转义 / 注入问题）。stderr 不在
+    AuthorizationExecuteWithPrivileges 的通信管道里 —— `cproc_auth_exec` 会临时把
+    本进程的 fd 2 指到一根管道上让子进程经 fork 继承，把错误文本一并收回来，
+    并用 `poll` 并发收两路（管道缓冲只有 64K，串行读会在子进程写满 stderr 时死锁）。
+
+### 锁：预授权 / 吊销（左下角）
+
+主窗口左下角有一个系统工具同款的锁：**关 = 未持有凭据，开 = 已持有**。
+
+- 点关着的锁 → `Privilege.authorize()`（`AuthorizationCopyRights`），弹一次系统对话框，
+  之后 5 分钟内的特权操作直接复用这份凭据，不再询问。
+- 点开着的锁 → `releaseAuthorization()`：`AuthorizationFree` 掉 ref 并清掉指纹会话，
+  下一次特权操作重新验证。
+- 三态由 `Privilege.lockState`（`root` / `unlocked` / `locked`）决定，所有状态变化
+  （预授权、吊销、降权）都会发 `.vantagePrivilegeDidChange`，窗口激活时也重同步一次
+  （凭据可能由网络窗口等其它入口取得）。
+
+> **必须走 `Privilege.notifyPrivilegeChanged()`，不要直接 post。**
+> `authorize()` 与 helper 安装都在后台线程，观察者却直接改 `NSButton` 的图片与
+> `contentTintColor`；AppKit 在非主线程改视图会让 CoreAutoLayout 抛异常并
+> `abort()`（崩溃栈落在 `syncLockUI` → `_setContentTintColor:` → `NSISEngine`）。
+> 观察者里也补了一次 `Thread.isMainThread` 兜底。
+
+### Touch ID（可选）
+
+`AuthorizationCopyRights` 的对话框只会给密码输入框，SecurityAgent 不向第三方 App
+开放生物识别。要用指纹就得自己完成「验证身份 → 执行特权操作」：
+
+1. 本进程（用户 Aqua 会话，能访问 Touch ID）用 `LAContext.evaluatePolicy` 验证；
+2. 一个常驻 root 守护进程执行固定操作 —— 它不在用户会话里，弹不出指纹框，
+   所以信任「调用方就是 Vantage 本体」。
+
+**安装**（偏好 → 通用 → 提权与安全，默认关闭）：经 Authorization Services（这一次仍是密码）
+以 root 启动**本 App 的二进制**的 `--helper-install <uid>` 子模式。所有落盘都走
+「同目录 O_EXCL 临时文件（0600 起步）→ fd 上 fchmod / fchown（返回值检查）→ fsync →
+cdhash + 长度比对源二进制 → 原子 rename」：最终路径上永远不会出现半成品或权限不对的
+中间态，也没有「目标不存在」窗口（launchd / KeepAlive 任何时刻来加载都拿得到完整文件）。
+**bootout 放在文件全部就绪之后** —— 替换失败时旧守护进程还在跑，升级失败不会把可用
+安装弄没。卸载即 `bootout` + 删除（`--helper-uninstall` 子模式，或安装者经 socket 免密
+自毁）。
+
+> **所有文件操作都在子模式里进程内完成**（open/write/fchmod/fchown/fsync/rename 都是
+> 系统调用），不依赖 `cat` / `chmod` / `chown` / `install(1)` / `sh` 这些外部命令，
+> 也就没有 heredoc、转义和 trap 回滚。**不要在临时目录里中转**（root 往用户的 /tmp 写
+> 文件是污染，且 root 的 `NSTemporaryDirectory()` 并不总是可写）—— 临时文件建在目标
+> 同目录（同卷 rename 才原子），root 直接从原始可执行文件路径复制。唯一保留的外部命令
+> 是 `launchctl`（bootstrap / bootout / enable 没有公开 API 替代），以 argv 直呼、
+> 不经 shell；子模式环境取 `Privilege.cleanEnvironment`（与 C 层 exec 白名单同源）。
+
+**通信**：`/var/run/io.github.nanacaret.Vantage.helper.sock`（`chmod 0666`，目录只有 root 可写），
+帧格式是「4 字节大端长度 + JSON」。
+
+**鉴权分两层，缺一不可**（`TouchIDHelperServer.handle`）：
+
+1. **身份**：全部取自**审计令牌**（`getsockopt(LOCAL_PEERTOKEN)`，连接建立时内核
+   签发的 `audit_token_t`，绑定这条连接本身 —— pid 复用 / TOCTOU 都影响不了它），
+   `audit_token_to_euid/ruid`（C 层封装 `cproc_audit_*`）必须同时满足
+   - euid 等于 `/dev/console` 的属主（当前桌面登录用户；FUS 时指前台用户，登录窗口时是 root → 拒绝）；
+   - 属于 `admin` 组（`getgrouplist` 查，含嵌套组）；
+   - root 客户端放行（它本就有全部权限，助手给不了它更多）；
+   - ruid 也必须是这个 uid（euid 为 root 的非 root 客户端除外 —— ruid 兜底查 pid）。
+
+   只查签名是不够的：任何本地用户都能把同一份 App 复制到自己的目录里运行，
+   如果助手只认 cdhash，**非管理员就能绕过密码拿到 root** —— 这是「小心欺诈」的要点。
+2. **代码**：`kSecGuestAttributeAudit`（同样用审计令牌，不用 pid）→
+   `SecCodeCopyGuestWithAttributes` → `SecCodeCopyStaticCode` →
+   `SecCodeCopySigningInformation` 取 `kSecCodeInfoUnique`（cdhash），必须与
+   **本进程运行中的代码**（`SecCodeCopySelf`，不读磁盘路径，避开启动后二进制被替换
+   的 TOCTOU）完全一致。因为装的是同一份二进制，这等价于「调用方就是同一份 Vantage 构建」。
+
+两条都过不了时**连请求体都不读**，直接回错误码（`not-admin` / `not-console` / `signature`）断开。
+
+> **审计令牌之前的那次段错误**：老版本用 `getpeereid(fd, &uid, nil)`，传 nil 作 gid
+> 指针时 libc 仍会写入 gid —— 等于往空指针写，守护进程在 `relaunch` 请求上直接
+> **段错误**。客户端收不到回复（`read` 得到 EOF），`relaunchAsRoot()` 返回 false，
+> 界面就显示成「已取消提权」。KeepAlive 5 秒后把守护进程拉起来，所以下次 ping 又
+> 正常，看起来像「只有提权坏了」。这个 bug 只有真按一次指纹才会暴露。
+> （`getpeereid` 已整体被审计令牌取代；教训保留：**取 uid 的 API 的出参必须给真指针**。）
+
+**版本识别**（升级 / 重新编译后必须重装助手）：安装时把 `version` / `protocol` / `cdhash`
+写进 `/Library/PrivilegedHelperTools/io.github.nanacaret.Vantage.helper.info`（sidecar）。
+客户端三路比对：cdhash（真正判据）、`protocol`（线路协议版本，`TouchIDHelperProtocol.version`）、
+`version`（`CFBundleShortVersionString (CFBundleVersion)`）。任一不符 → `TouchIDHelper.problem`
+返回一句可直接显示的话（「辅助工具装的是 1.0.0，当前 App 是 1.1.0：需要重新安装助手…」），
+`TouchIDAuth.isActive` 随即变 false（提权自动退回系统密码框，不会失败），
+主窗口顶部与偏好页都会出现「重装助手 / 重新安装」按钮。
+
+**指纹按 effective uid 判定**：以 root 运行的进程（euid=0）去问 `LAContext`，
+一律得到「没有可用 Touch ID / 没有录入指纹」—— 哪怕同一个用户明明录过指纹。
+所以 root 实例里必须先把 euid 临时切回真实用户（`TouchIDAuth.asUser`）：
+
+```
+suid=0（提权上来的进程都满足）→ setegid(用户) → seteuid(用户) → LAContext
+                                 → seteuid(0) → setegid(0)
+```
+
+参考实现见 sudo 的 `touchid_exec.c`（setuid 程序：需要特权时 `seteuid(0)`，
+调指纹前 `seteuid(ruid)`）。**整个「询问 + 等用户按手印」期间都要保持在用户身份下**，
+中途切回 root 系统会认为调用方换人。切不回去（`seteuid(0)` 失败）时不做补救，
+只 NSLog —— 继续以用户身份运行比假装是 root 安全。
+
+**「是否启用」是机器级状态**：装的是 root LaunchDaemon，跟登录的是哪个用户无关。
+存进 `UserDefaults` 会落进各自用户的偏好域 —— 普通用户开启后，提权出来的 root
+实例读的是 `/var/root` 的偏好，设置页就显示「未启用」（但助手明明在跑）。
+所以判据是 `/Library/Application Support/io.github.nanacaret.Vantage/touchid.enabled`
+（0644，所有用户可读），由安装脚本最后一步 `touch` 出来、卸载脚本 / 助手自毁时删掉。
+文件不存在时回落到「助手是否装着」，这样升级上来的老用户也不会被显示成关闭。
+
+**免密码卸载**：安装时把「发起安装的用户 uid」写进 sidecar（`installer=`），
+助手收到 `uninstall` 请求时比对 `getpeereid` 取到的 euid —— 同一个人就不再要密码，
+直接由助手自毁；别人（或老版本助手不认这个 op）回落到系统授权框。
+自毁必须交给**独立会话**的子进程（`posix_spawn` + `POSIX_SPAWN_SETSID`）：
+`launchctl bootout` 会把本 job 的所有进程一起杀掉，同进程组里的清理脚本
+还没删完就没了。先删 plist / info / socket / 二进制，再 bootout。
+
+**能做**：`ping`（回报自身协议号与安装时记录的版本）；`exec`（白名单 `/sbin/ifconfig`、
+`/sbin/route`、`/bin/launchctl`，参数原样交给 `execve`，
+不经 shell；外加调用方自己的可执行文件、且仅限 `--tcc-write`）；`relaunch`
+（`launchctl asuser <uid> <app> --drop-uid <uid>`，在用户图形会话里以 root 启动）。
+
+`relaunch` 的两处细节：
+
+- **路径比较必须规范化**：客户端传的是 `Bundle.main.executablePath`（可能是带符号链接的写法，
+  例如 `/tmp/...`），助手拿到的是 `proc_pidpath`（内核视角的真实路径，`/private/tmp/...`）。
+  不 `realpath` 就会「明明是同一个文件却判定不相等」，请求被拒。
+- **要确认实例真的起来了**：`launchctl asuser` 会陪跑到子进程退出，所以判据是
+  「进程表里出现 uid=0 且路径相同的实例」**或**「launchctl 自己还活着」；
+  只有它提前退出才算失败，并把它的 stderr 原样回给界面（而不是笼统的「已取消」）。
 
 **重启流程的两个坑**（都踩过，也是本节存在的理由）：
 
@@ -1426,10 +1652,19 @@ Copy Row
      → 主线程立刻开始每 0.3s 轮询：
           另一个 Vantage 窗口出现？（CGWindowList，便宜，每轮都查）
           进程表里出现同路径的 uid=0 实例？（全量快照较贵，每 3 轮查一次）
-          → 命中即 exit(0)
-          launchResult == false（用户取消）→ 立刻提示「已取消提权」
+          → 命中即「把焦点交给新实例 + 等 250ms + exit(0)」
+             （新实例是 root 被 launchctl asuser 拉起来的，LaunchServices 不把
+               它当「用户点开的 App」，窗口常常不持焦点；由仍在用户会话里的旧
+               实例 NSRunningApplication.activate 一下最稳，root 实例自己也会
+               连要 6 次焦点）
+          launchResult == false → 立刻提示具体原因（Privilege.lastEscalationError）
           10 秒仍没出现 → 提示「没等到新的 root 实例」并把界面恢复成可重试
 ```
+
+`relaunchAsRoot()` 的返回值现在只表示「这次到底成没成」，失败原因单独放在
+`Privilege.lastEscalationError`（加锁，后台写、主线程读）。指纹那条路失败时
+（助手版本不一致 / 没在跑 / 会话对不上）会**回落到系统密码框**先把这次提权做完，
+同时把失败原因留给主窗口提示条 —— 不再出现「点了没反应 / 只说已取消」。
 
 两个信号取「或」的原因：提权后的进程属于 root，非 root 调用方读它的
 `proc_pidinfo(PROC_PIDTBSDINFO)` **会被拒**（实测），进程表里查不到；而窗口的
@@ -1490,8 +1725,8 @@ owner PID 是 CG 层公开信息，一定看得到。只要新实例画出窗口
 | 删路由 | 同上把 `add` 换成 `delete` |
 
 **参数校验**（`NetValidate`）：地址必须过 `inet_pton`、前缀 0…32 / 0…128、
-MTU 68…65535、网卡名必须在当前网卡列表里。校验通过后由 `Privilege.shellQuote`
-逐段加单引号再交给 `/bin/sh -c`，不接受任何未检查的输入。
+MTU 68…65535、网卡名必须在当前网卡列表里。校验通过后以 argv 数组**直接 exec**
+`ifconfig` / `route`（不经 shell，也就不需要任何转义），不接受任何未检查的输入。
 
 **删除路由必须优先带网关**：`route delete default` 会删掉内核匹配到的**第一条**默认路由 ——
 同时存在 VPN（utun8）和物理网卡两条默认路由时，删的往往不是用户选中的那条。
