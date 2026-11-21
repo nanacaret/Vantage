@@ -107,7 +107,10 @@ final class ProcOutlineView: NSOutlineView {
 
     /// 右键那一行的进程信息。菜单动作直接用它，不依赖「当前选中行」——
     /// 避免刷新 / 多选 / 键盘呼出菜单时把信号发到别的进程。
-    private(set) var contextPID: Int32 = 0
+    ///
+    /// 用 `Int32?` 而不是 `0` 表示「没点在某一行上」：PID 0 是真实进程
+    /// （kernel_task），拿 0 当哨兵会让它被当成「未选中」。
+    private(set) var contextPID: Int32?
     private(set) var contextName = ""
     private(set) var contextExited = false
 
@@ -121,7 +124,7 @@ final class ProcOutlineView: NSOutlineView {
             contextExited = n.proc.isExited
             selectRowIndexes(IndexSet(integer: r), byExtendingSelection: false)
         } else {
-            contextPID = 0
+            contextPID = nil
             contextName = ""
             contextExited = false
         }
@@ -716,14 +719,16 @@ final class ProcessListViewController: NSViewController,
     func menuNeedsUpdate(_ menu: NSMenu) {
         guard menu === contextMenu else { return }
 
-        let pid = outline.contextPID > 0
-            ? outline.contextPID : (AppContext.shared.selectedPID ?? 0)
-        let name = outline.contextPID > 0 ? outline.contextName
+        // 右键行优先，其次当前选中行；两者都没有才是「没目标」。
+        // PID 0（kernel_task）是合法目标，所以用可选值而不是 > 0 判断。
+        let pid: Int32? = outline.contextPID ?? AppContext.shared.selectedPID
+        let name = outline.contextPID != nil ? outline.contextName
             : (AppContext.shared.selectedProcess()?.displayLabel ?? "")
-        let exited = outline.contextPID > 0
+        let exited = outline.contextPID != nil
             ? outline.contextExited
             : (AppContext.shared.selectedProcess()?.isExited ?? false)
-        let hasTarget = pid > 0 && !exited
+        // 发信号要求 pid > 0：kill(0, sig) 会发给整个进程组，绝不能落到内核那一行
+        let canSignal = (pid ?? 0) > 0 && !exited
 
         menu.removeAllItems()
         func add(_ title: String, _ sel: Selector,
@@ -735,45 +740,46 @@ final class ProcessListViewController: NSViewController,
             menu.addItem(i)
         }
 
-        let header = NSMenuItem(title: pid > 0
-                                ? "\(name) · PID \(pid)\(exited ? L("list.exitedSuffix") : "")"
-                                : L("list.noProcessSelected"),
+        let header = NSMenuItem(title: pid.map {
+                                    "\(name) · PID \($0)\(exited ? L("list.exitedSuffix") : "")"
+                                } ?? L("list.noProcessSelected"),
                                 action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)
         menu.addItem(.separator())
 
         // 已退出的进程也能打开检查器：只看退出前那一帧的快照
-        add(L("list.openInspector"), #selector(menuInspector), enabled: pid > 0)
+        add(L("list.openInspector"), #selector(menuInspector), enabled: pid != nil)
         add(L("list.locateThisProcessByWindow"), #selector(menuLocateInMain),
-            enabled: hasTarget)
+            enabled: canSignal)
 
         menu.addItem(.separator())
-        add(L("list.quitProcessSigterm"), #selector(menuTerminate), enabled: hasTarget)
+        add(L("list.quitProcessSigterm"), #selector(menuTerminate), enabled: canSignal)
         add(L("list.forceQuitSigkill"), #selector(menuForceTerminate),
-            enabled: hasTarget)
-        add(L("list.pauseResume"), #selector(menuSuspend), enabled: hasTarget)
+            enabled: canSignal)
+        add(L("list.pauseResume"), #selector(menuSuspend), enabled: canSignal)
 
         // 「发送信号」子菜单：内容由偏好的勾选决定
         let signalItem = NSMenuItem(title: L("list.sendSignal2"), action: nil,
                                     keyEquivalent: "")
         signalItem.submenu = signalSubmenu
-        signalItem.isEnabled = hasTarget
+        signalItem.isEnabled = canSignal
         menu.addItem(signalItem)
-        SignalMenuBuilder.fill(signalSubmenu, pid: pid, name: name)
-        if !hasTarget {
+        // 菜单项携带的 PID 必须是真实目标；没有目标时填 0 也不会被启用（下面全禁用）
+        SignalMenuBuilder.fill(signalSubmenu, pid: pid ?? 0, name: name)
+        if !canSignal {
             for i in signalSubmenu.items { i.isEnabled = false }
         }
 
         menu.addItem(.separator())
-        add(L("list.revealInFinder"), #selector(menuReveal), enabled: hasTarget)
+        add(L("list.revealInFinder"), #selector(menuReveal), enabled: canSignal)
         add(L("list.samplingS", Preferences.shared.sampleSeconds),
-            #selector(menuSample), enabled: hasTarget)
+            #selector(menuSample), enabled: canSignal)
 
         menu.addItem(.separator())
-        add(L("list.copyPid"), #selector(menuCopyPID), enabled: pid > 0)
-        add(L("list.copyFullCommandLine"), #selector(menuCopyCmd), enabled: hasTarget)
-        add(L("list.copyExecutablePath"), #selector(menuCopyExe), enabled: hasTarget)
+        add(L("list.copyPid"), #selector(menuCopyPID), enabled: pid != nil)
+        add(L("list.copyFullCommandLine"), #selector(menuCopyCmd), enabled: canSignal)
+        add(L("list.copyExecutablePath"), #selector(menuCopyExe), enabled: canSignal)
 
         menu.addItem(.separator())
         let prefItem = NSMenuItem(title: L("list.configureMenuSignals"),
@@ -784,15 +790,14 @@ final class ProcessListViewController: NSViewController,
     }
 
     @objc private func menuInspector()       {
-        let pid = outline.contextPID > 0
-            ? outline.contextPID : (AppContext.shared.selectedPID ?? 0)
-        guard pid > 0 else { return }
+        guard let pid = outline.contextPID ?? AppContext.shared.selectedPID
+        else { return }
         AppContext.shared.showInspector(for: pid)
     }
     @objc private func menuLocateInMain()    {
-        let pid = outline.contextPID > 0
-            ? outline.contextPID : (AppContext.shared.selectedPID ?? 0)
-        guard pid > 0 else { return }
+        // 按窗口定位要求 pid > 0：kernel_task 没有窗口，locateProcess 也只接受正 PID
+        guard let pid = outline.contextPID ?? AppContext.shared.selectedPID,
+              pid > 0 else { return }
         AppContext.shared.locateProcess(pid)
     }
     @objc private func menuTerminate()       { AppContext.shared.terminate(force: false) }

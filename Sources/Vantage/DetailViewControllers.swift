@@ -1568,7 +1568,10 @@ final class DetailTabViewController: NSTabViewController {
     }
 
     func reload(force: Bool = false) {
-        guard let pid = currentPID, pid > 0 else {
+        // PID 0 是合法的进程（kernel_task），不能用 0 当「没选中」的哨兵：
+        // 那样点它只会得到「未选择进程」。真正的「没选中」由 currentPID == nil
+        // 表达，所以这里判 nil 而不是判 > 0。
+        guard let pid = currentPID, pid >= 0 else {
             showEmpty()
             return
         }
@@ -1608,6 +1611,25 @@ final class DetailTabViewController: NSTabViewController {
         // 轻量页立即出内容，不等后台队列
         overview.setSnapshot(snap, port: exited ? nil : cachedPort(pid: pid, force: force))
         command.set(text: commandText(pid: pid, snap: snap))
+
+        // kernel_task（PID 0）：它是内核本身，没有 BSD 进程结构。
+        // 概览 / 命令页照常用快照渲染（名称、所有者、启动时间、架构都有），
+        // 其余页签统一给一句说明 —— 否则每页都是一屏「Operation not permitted
+        // · 进程可能已退出」，而它明明就在跑，看起来像坏了。
+        if pid == 0 {
+            lastPID = pid
+            loadedKeys.removeAll()
+            pendingLocate = nil
+            // 用 showHint 而不是 showPlaceholder：后者保持原列宽、把文字塞进
+            // 第一列会被截断（File 页首列只有 ~170pt）。这条说明是永久的
+            // （PID 0 永远不会有 FD / 环境变量），值得占两列完整显示。
+            for vc in [files, env, dylibs, sockets, monitoring, audit, mach,
+                       regions, pipePeers, tty, threads, windows, permissions] {
+                vc.showHint(L("detail.kernelTaskHasNoProcInfo"))
+            }
+            signing.showHint(L("detail.kernelTaskHasNoProcInfo"))
+            return
+        }
 
         if exited {
             // 退出前采过的页照原样回放；没采过的页直接留空（不显示「正在采集…」）

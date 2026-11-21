@@ -82,6 +82,7 @@ MASTER = {
     'detail.doubleClickToOpenThe': ('双击打开 PID 对应的进程检查器', "Double-click to open the PID's inspector"),
     'detail.endAddress': ('结束地址', 'End Address'),
     'detail.exitedNothingCollected': ('进程已退出，退出前没有采集过这一页。', 'The process has exited and this tab was never collected.'),
+    'detail.kernelTaskHasNoProcInfo': ('内核自身，没有可显示的进程级数据', 'Kernel itself — no process-level data to show'),
     'detail.stateExited': ('已退出', 'Exited'),
     'detail.enumeratingLoadedImages': ('正在枚举已加载镜像…', 'Enumerating loaded images…'),
     'detail.enumeratingMemoryMappings': ('正在枚举内存映射…', 'Enumerating memory mappings…'),

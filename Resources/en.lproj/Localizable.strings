@@ -100,6 +100,7 @@
 "detail.item5" = "Item";
 "detail.item6" = "Item";
 "detail.jobControlState" = "Job Control State";
+"detail.kernelTaskHasNoProcInfo" = "Kernel itself — no process-level data to show";
 "detail.layer" = "Layer";
 "detail.loadAddress" = "Load Address";
 "detail.loadedWhenThisTabIs" = "Loaded when this tab is opened…";

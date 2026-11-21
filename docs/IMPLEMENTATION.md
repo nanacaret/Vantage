@@ -106,6 +106,26 @@ iconutil -c icns Assets/Vantage.iconset -o Vantage.app/Contents/Resources/Vantag
 环境/镜像/映射/签名 60 秒）。⌘R 或「刷新」按钮会丢弃当前进程缓存强制重采。
 详见「详情采集为什么慢」章节。
 
+#### 特殊进程：kernel_task（PID 0）
+
+`kernel_task` 有真实的 PID 0，列表里也能看到它，但它**不是 BSD 进程**，能读到的字段和普通进程完全不同：
+
+| 数据 | 来源 | 普通用户 | root |
+|---|---|---|---|
+| 名称 / PPID / UID / 状态 / 启动时间 / 架构 | `sysctl KERN_PROC_ALL` 的 `kinfo_proc` | ✓ | ✓ |
+| CPU 时间、线程数、faults、系统调用数 | `proc_pidinfo(PROC_PIDTASKINFO)` | ✗ `EPERM` | ✓（RSS 仍报 0） |
+| BSD 信息（nice / PGID / flags） | `proc_pidinfo(PROC_PIDTBSDINFO)` | ✗ | 无 BSD 记录 |
+| FD 列表 / 环境变量 / 内存映射 / dylibs / 控制终端 / 审计令牌 | 各 `PROC_PID*` / `KERN_PROCARGS` | ✗ | 这些概念在内核任务上不存在 |
+
+实测（本机 macOS 26，普通用户）：`proc_pidinfo(0, PROC_PIDTASKINFO)` 返回 0 字节 + `EPERM`，
+`KERN_PROCARGS` 返回 `EINVAL`；只有在 root 实例里才看到 `threads=664`、`cpu=17:59:09` 这类值，
+而内存始终是 0 B —— 内核没有用户态地址空间可算。
+
+因此详情面板对 PID 0 的处理是：概览 / 命令照常渲染快照，其余页签统一显示
+「内核自身，无进程级信息」，而不是让每个页签各弹一屏 `Operation not permitted`。
+**PID 0 不是「未选中」**：选中模型用 `Int32?`，只有 `nil` 才表示没有目标；
+需要正 PID 的动作（发信号 `kill(0, sig)` 会发给整个进程组、按窗口定位、路径类菜单）仍然单独判 `> 0`。
+
 ### 底部统计（Activity Monitor 风格）
 自绘面积曲线：CPU 用户态/系统态堆叠、内存占用；另有进程数、线程数、逻辑/物理核、
 物理内存/已用/可用/Wired/已压缩、Swap、1/5/15 分钟负载。
@@ -737,6 +757,8 @@ C 采集层以 macOS SDK / xnu 公开头文件为准。以下列出这些接口�
 | **`swift build` 报 6 类语法错误**（`expected ',' separator` / `raw value for enum case must be a literal` / `conditional binding must have Optional type` 等） | 初版 i18n 用正则 `"(?:\\.\|[^"\\])*"` 机械地把源码里含中文的字符串包成 `L("…")`。这个正则**在 Swift 字符串插值内嵌双引号处截断**：`"# 可执行文件: \(snap?.exepath ?? "—")\n"` 被切成 `L("# 可执行文件: \(snap?.exepath ?? ")—")\n"`，源码直接语法崩坏；另外 `case control = L("终止 / 控制")` 违反「enum raw value 必须是编译期字面量」，`alternateTitle` 在 macOS 26 SDK 是非 Optional，`if let` 报错 | ① 按反馈重做为**语义 key**：中文是 `.strings` 的 value，源码只写 `L("detail.cmd.executable", arg)`，格式串用 `{0}` 占位 —— 插值表达式不再混进字符串字面量，从根上消除截断；② `SignalGroup.rawValue` 改稳定 ASCII key，显示名走 `title → L(rawValue)`；③ `alternateTitle` 改普通 `let`；④ 迁移改用**能正确处理 `\(` 插值嵌套引号的 Swift 字符串扫描器**（`Tools/` 外的一次性脚本），并验证全项目 0 个未闭合字符串、624 处 `L()` 参数与占位符一致；⑤ 保护区（`titles:` 中文协议数组、列宽关键词数组）显式还原，不被文案替换波及 |
 
 | **「审计」页签永远空白**（`cproc_audit_info` 能采到 20+ 行，界面却一行不显示） | `applyLines()` 是「采集 key → 表格」的唯一落点：`items(for:)` 已经为 `.audit` 配好 `lineItem("audit", .audit, …)`，但 `applyLines` 的 switch 少了 `case "audit"`，直接命中 `default: break`，采到的行被静默丢弃；同一处疏漏也漏了审计页在「切换进程 / 正在采集 / 未选择进程」三处占位列表里的登记 | ① 补 `case "audit"`（项目 / 值 / 说明 三列，与 TTY / Mach 同构）与三处占位；② `default` 改为 `assertionFailure`：Debug 下新页签忘写分支会立刻炸出来，Release 断言被编译掉、不影响用户。教训：详情页签是「C 采集 key」与「Swift 落表分支」两张必须同步的表，靠约定容易漏，改断言兜住 |
+
+| **选中 kernel_task 时检查器显示「未选择进程」**，各页签全空 | PID 0 是真实进程，但界面把它当成了「没有目标」的哨兵：`DetailPane.reload()` 的 `guard pid > 0`、`ProcOutlineView.contextPID = 0` 默认值、右键菜单的 `contextPID > 0 ? … : selectedPID` 都用 0 表示「未选中」，于是 pid 0 既进不了详情采集，右键菜单也会显示「未选择进程」| ① 选中模型用 `Int32?`（nil = 未选中），`reload()` 改为判 `pid >= 0`；`contextPID` 改成 `Int32?`；② 真正需要正 PID 的地方（发信号、按窗口定位、路径类菜单）继续要求 `> 0` —— `kill(0, sig)` 会发给整个进程组，绝不能落到内核行；③ pid 0 走单独分支：概览 / 命令页照常用快照渲染（名称、所有者、启动时间、架构都有），其余页签用 `showHint` 给一句「内核自身，无进程级信息」。注意不能用 `showPlaceholder` —— 它保持原列宽、把文字塞进第一列会被截断 |
 
 排序（点表头）属于主动改变视图顺序，仍会回到顶部——这是刻意的，不算滚动状态丢失。
 

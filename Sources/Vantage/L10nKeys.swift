@@ -102,6 +102,7 @@ enum L10nKey {
     static let detailItem5 = "detail.item5"
     static let detailItem6 = "detail.item6"
     static let detailJobControlState = "detail.jobControlState"
+    static let detailKernelTaskHasNoProcInfo = "detail.kernelTaskHasNoProcInfo"
     static let detailLayer = "detail.layer"
     static let detailLoadAddress = "detail.loadAddress"
     static let detailLoadedWhenThisTabIs = "detail.loadedWhenThisTabIs"
