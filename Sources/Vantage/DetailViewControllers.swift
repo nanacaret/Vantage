@@ -570,7 +570,8 @@ final class DetailTableViewController: NSViewController,
         let linked = pidValue(value, header: header, row: r) != nil
         cell.configure(value,
                        color: linked ? AppColors.shared.color(.pidLink)
-                            : (idx == 0 ? .secondaryLabelColor : .labelColor))
+                            : (idx == 0 ? .secondaryLabelColor : .labelColor),
+                       richText: true)
         // 列宽有限时长文本会被截断（「权限」页的详情列尤其明显）；
         // 悬停显示完整内容，双击跳转的提示优先。
         cell.toolTip = linked ? L("detail.doubleClickToOpenThe")

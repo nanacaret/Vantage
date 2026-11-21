@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 #include "CProc.h"
+#include "cproc_internal.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -112,17 +113,27 @@ static void il_add(ioreg_lines_t *b, const char *s)
         b->v = nv;
         b->cap = nc;
     }
+    cproc_verify_line(s);
     b->v[b->n++] = il_strdup(s);
 }
 
 static void il_addf(ioreg_lines_t *b, const char *fmt, ...)
 {
+    /* 驱动给的节点名 / 属性值里可能有 Tab、换行（例如多行固件串），
+     * 不转义会让整行错列、让一行变成多行 —— 与详情表用同一套转义 */
     char buf[16384];
+    char esc[CPROC_ESC_MAX];
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(buf, sizeof(buf), fmt, ap);
+    /* vsnprintf 会消费 va_list，转义还要用同一批参数来量前缀长度，
+     * 所以格式化必须走 va_copy 的那一份，否则后面读到的是垃圾 */
+    va_list ap_fmt;
+    va_copy(ap_fmt, ap);
+    vsnprintf(buf, sizeof(buf), fmt, ap_fmt);
+    va_end(ap_fmt);
+    const char *final = cproc_escape_line(fmt, buf, ap, esc, sizeof(esc));
     va_end(ap);
-    il_add(b, buf);
+    il_add(b, final);
 }
 
 static int il_finish(ioreg_lines_t *b, cproc_lines_t *out)

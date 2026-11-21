@@ -65,7 +65,40 @@ enum PathReveal {
         guard s.hasPrefix("/") else { return nil }
         // 冒号基本只出现在 PATH 这类「多路径拼接」的值里，单文件路径极少有
         guard !s.contains(":"), !s.contains("\t") else { return nil }
+
+        // 显示层把控制字符换成了 Control Pictures 字形（`TSV.field`：Tab → ␉），
+        // 所以单元格里的文字对「带 Tab / 换行的文件名」而言不是真实路径。
+        // 字面路径不存在时才尝试还原 —— 文件名里本来就有 ␉ 的情况仍然优先
+        // 按字面命中，不会被误还原。
+        // 先判字形再落盘：99.99% 的路径不含字形，不该为此多一次文件系统调用
+        if containsPicture(s), !FileManager.default.fileExists(atPath: s) {
+            let real = unescape(s)
+            if real != s, FileManager.default.fileExists(atPath: real) {
+                return real
+            }
+        }
         return s
+    }
+
+    private static func containsPicture(_ s: String) -> Bool {
+        s.unicodeScalars.contains { TSV.isPicture($0.value) }
+    }
+
+    /// 把 `TSV.field` 的控制字符字形还原成真实字节（仅用于动作，不用于显示）
+    private static func unescape(_ s: String) -> String {
+        guard containsPicture(s) else { return s }
+        var out = ""
+        out.reserveCapacity(s.count)
+        for u in s.unicodeScalars {
+            switch u.value {
+            case 0x2421: out.unicodeScalars.append(UnicodeScalar(0x7f)!)
+            case 0x2400...0x241F:
+                out.unicodeScalars.append(UnicodeScalar(u.value - 0x2400)!)
+            default:
+                out.unicodeScalars.append(u)
+            }
+        }
+        return out
     }
 
     /// 菜单标题用：路径太长时保留尾部（尾部才是有信息量的部分）

@@ -118,8 +118,14 @@ enum Clipboard {
     /// 不带表头调用时把 columns 传空数组即可。
     static func joined(rows: [[String]], columns: [String] = []) -> String {
         var lines: [String] = []
-        if !columns.isEmpty { lines.append(columns.joined(separator: "\t")) }
-        for row in rows { lines.append(row.joined(separator: "\t")) }
+        // 单元格里的 Tab / 换行会毁掉粘贴到表格软件后的分列分行，先换成
+        // Control Pictures（␉ / ␊，与表格里看到的一致；对普通文本是恒等变换）
+        if !columns.isEmpty {
+            lines.append(columns.map(TSV.field).joined(separator: "\t"))
+        }
+        for row in rows {
+            lines.append(row.map(TSV.field).joined(separator: "\t"))
+        }
         return lines.joined(separator: "\n")
     }
 }

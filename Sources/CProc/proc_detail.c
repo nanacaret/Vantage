@@ -230,6 +230,7 @@ static void lb_add_raw(line_builder_t *b, const char *s)
         b->v = nv;
         b->cap = nc;
     }
+    cproc_verify_line(s);
     b->v[b->n++] = strdup(s);
 }
 
@@ -291,23 +292,55 @@ static void lb_add(line_builder_t *b, const char *s)
     lb_add_bilingual(b, s, ef ? ef : s);
 }
 
+/* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
+/* 字段值转义
+ *
+ * 传输格式是「一行一条记录、字段以 Tab 分隔」，而文件名 / argv / env 里
+ * 合法地可以出现 Tab 与换行，直接透传会让整行错列或断行。转义实现与
+ * IORegistry 那条通道共用，见 text_escape.c（含「按格式串定位真分隔符」
+ * 的原理说明与 Control Pictures 的选型）。
+ * ------------------------------------------------------------------ */
+
 static void lb_addf(line_builder_t *b, const char *fmt, ...)
 {
     char zh[8192], en[8192];
+    char zh_esc[CPROC_ESC_MAX], en_esc[CPROC_ESC_MAX];
+    const char *ef = cproc_l10n_en_fmt(fmt);
+
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(zh, sizeof(zh), fmt, ap);
-    va_end(ap);
 
-    const char *ef = cproc_l10n_en_fmt(fmt);
+    /* 每个消费者各拿一份 va_copy：vsnprintf 会消费列表，共用一份是 UB */
+    va_list ap_zh;
+    va_copy(ap_zh, ap);
+    vsnprintf(zh, sizeof(zh), fmt, ap_zh);
+    va_end(ap_zh);
+
+    va_list ap_sep;
+    va_copy(ap_sep, ap);
+    const char *zh_final = cproc_escape_line(fmt, zh, ap_sep, zh_esc, sizeof(zh_esc));
+    va_end(ap_sep);
+
+    /* 中英两份按各自格式串定位分隔符（英文译文可能增删字词，以各自的
+     * 格式串为准），再交给双语拼装 */
     if (ef) {
-        va_start(ap, fmt);
-        vsnprintf(en, sizeof(en), ef, ap);
+        va_list ap_en;
+        va_copy(ap_en, ap);
+        vsnprintf(en, sizeof(en), ef, ap_en);
+        va_end(ap_en);
+
+        va_list ap_sep_en;
+        va_copy(ap_sep_en, ap);
+        const char *en_final = cproc_escape_line(ef, en, ap_sep_en,
+                                                 en_esc, sizeof(en_esc));
+        va_end(ap_sep_en);
         va_end(ap);
-    } else {
-        snprintf(en, sizeof(en), "%s", zh);
+        lb_add_bilingual(b, zh_final, en_final);
+        return;
     }
-    lb_add_bilingual(b, zh, en);
+    va_end(ap);
+    lb_add_bilingual(b, zh_final, zh_final);
 }
 
 static int lb_finish(line_builder_t *b, cproc_lines_t *out)

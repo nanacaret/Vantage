@@ -216,8 +216,11 @@ enum PermissionReader {
 
     /// 表格 .lines 负载：不输出表头（表头由 Swift 侧按当前语言给）。
     static func lines(_ r: PermissionReport) -> [String] {
-        r.rows.map { [$0.category, $0.name, $0.state, $0.detail, $0.source]
-            .joined(separator: "\t") }
+        r.rows.map {
+            // 权限名 / 详情里可能带路径或 entitlements 值，Tab 与换行会破坏分列
+            [$0.category, $0.name, $0.state, $0.detail, $0.source]
+                .map(TSV.field).joined(separator: "\t")
+        }
     }
 
     // -----------------------------------------------------------------

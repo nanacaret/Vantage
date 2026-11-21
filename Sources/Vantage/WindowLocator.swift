@@ -166,7 +166,7 @@ enum WindowLocator {
                 let alphaText = alpha.map { String(format: "%.2f", $0) } ?? "—"
 
                 lines.append([
-                    "\(num)", shownTitle, "\(layer)", bText, state,
+                    "\(num)", TSV.field(shownTitle), "\(layer)", bText, state,
                     "\(shareText) / \(alphaText)",
                 ].joined(separator: "\t"))
             }

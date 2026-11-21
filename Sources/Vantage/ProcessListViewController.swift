@@ -82,10 +82,21 @@ final class TextCell: NSTableCellView {
     required init?(coder: NSCoder) { fatalError(L("list.initCoderNotImplemented2")) }
 
     func configure(_ text: String, color: NSColor = .labelColor,
-                   alignment: NSTextAlignment = .left) {
+                   alignment: NSTextAlignment = .left,
+                   richText: Bool = false) {
+        textField?.alignment = alignment
+        // 详情表会把「不可见字符」转义成 \t / \n / \xNN，这里给它们上底色，
+        // 免得夹在长路径里和真的反斜杠混在一起。没有转义时退回纯文本。
+        if richText,
+           let attr = TSV.attributed(text,
+                                     font: textField?.font
+                                        ?? NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
+                                     color: color) {
+            textField?.attributedStringValue = attr
+            return
+        }
         textField?.stringValue = text
         textField?.textColor = color
-        textField?.alignment = alignment
     }
 }
 
