@@ -49,6 +49,7 @@
 "detail.archSlices" = "Architectures";
 "detail.architecture" = "Architecture";
 "detail.argv0" = "argv[0] (invocation name)";
+"detail.audit" = "Audit";
 "detail.bundleExecutable" = "Bundle Declared Executable";
 "detail.bundleRole" = "Role in Bundle";
 "detail.cmd.bundle" = "# Bundle: {0}\n\n";
@@ -141,6 +142,7 @@
 "detail.protectionMaxProtection" = "Protection / Max Protection";
 "detail.protocolFamily" = "Protocol / Family";
 "detail.rawProcessName" = "Raw Process Name";
+"detail.readingAuditInfo" = "Reading audit / identity info…";
 "detail.readingControllingTerminal" = "Reading controlling terminal…";
 "detail.readingEnvironmentVariables" = "Reading environment variables…";
 "detail.readingMachSigningFlags" = "Reading Mach / signing flags…";

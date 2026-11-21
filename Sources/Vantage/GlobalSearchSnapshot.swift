@@ -70,6 +70,7 @@ private enum GlobalSearchSources {
         out.append(c("monitoring",  DetailTab.monitoring.rawValue, .monitoring))
         out.append(c("tty",         DetailTab.tty.rawValue, .tty))
         out.append(c("mach",        DetailTab.mach.rawValue, .machSecurity))
+        out.append(c("audit",       DetailTab.audit.rawValue, .audit))
         out.append(GlobalSearchSource(key: "windows",
                                       tabIndex: DetailTab.windows.rawValue,
                                       heavy: false) { pid, _ in

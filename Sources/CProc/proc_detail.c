@@ -30,6 +30,7 @@
 #include <mach/mach_vm.h>
 #include <mach/task_info.h>
 #include <mach/vm_region.h>
+#include <bsm/libbsm.h>      /* audit_token_to_asid / auid / euid …（审计页） */
 #include <pthread.h>
 
 /* ------------------------------------------------------------------ */
@@ -1733,29 +1734,194 @@ int cproc_tty(int32_t pid, cproc_lines_t *out)
 /* 7. Mach 安全信息（BSD 标志 + task port 相关）                        */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* Mach 层：端口与令牌                                                 */
+/*                                                                     */
+/* 这里只放**纯 Mach** 的东西（task name port / security token /       */
+/* task port / dyld info）。进程身份、BSD flags、audit token、审计会话、*/
+/* 责任进程、唯一标识全部搬到「审计」页 —— 之前这个页签同时塞了两类，  */
+/* 找任何一项都要先在一堆无关行里翻。                                  */
+/* ------------------------------------------------------------------ */
+
+/* task_name_for_pid 只授予 task_info 能力（不能读写内存），受 SIP 限制
+ * 比 task_for_pid 少得多，是读 audit token / security token 的常规路径。
+ * 用 dlsym 动态解析，规避不同 SDK 里声明位置不同导致的编译/链接失败。 */
+static mach_port_t task_name_port(int32_t pid)
+{
+    typedef kern_return_t (*tnfp_fn)(mach_port_t, int, mach_port_t *);
+    void *sym = dlsym(RTLD_DEFAULT, "task_name_for_pid");
+    tnfp_fn tnfp = NULL;
+    if (sym) memcpy(&tnfp, &sym, sizeof(tnfp));
+    if (!tnfp) return MACH_PORT_NULL;
+    mach_port_t t = MACH_PORT_NULL;
+    if (tnfp(mach_task_self(), (int)pid, &t) != KERN_SUCCESS)
+        return MACH_PORT_NULL;
+    return t;
+}
+
 int cproc_mach_security(int32_t pid, cproc_lines_t *out)
 {
     line_builder_t b;
     if (lb_init(&b) != 0) return -1;
 
+    lb_add(&b, "项目\t值\t说明");
+
+    mach_port_t tname = task_name_port(pid);
+    if (tname == MACH_PORT_NULL) {
+        lb_addf(&b, "task name port\t-\ttask_name_for_pid 失败（%s）", strerror(errno));
+        lb_hint(&b, "本系统未导出 task_name_for_pid，或目标属于其他用户 / 受 SIP 保护；审计令牌同样拿不到");
+    } else {
+        lb_addf(&b, "task name port\t%u\ttask_name_for_pid 取得（只读，可 task_info）",
+                (unsigned)tname);
+#ifdef TASK_SECURITY_TOKEN
+        security_token_t sec;
+        memset(&sec, 0, sizeof(sec));
+        mach_msg_type_number_t sc = TASK_SECURITY_TOKEN_COUNT;
+        if (task_info(tname, TASK_SECURITY_TOKEN,
+                      (task_info_t)&sec, &sc) == KERN_SUCCESS) {
+            lb_addf(&b, "Security token\t%08x %08x\t2 × uint32",
+                    sec.val[0], sec.val[1]);
+        }
+#endif
+        mach_port_deallocate(mach_task_self(), tname);
+    }
+    lb_hint(&b, "audit token、审计会话、责任进程与唯一标识见「审计」页；签名细节见「代码签名」页");
+
+    /* ---- 完整 task port，仅作加分项 ---- */
+    mach_port_t task = task_for(pid);
+    if (task == MACH_PORT_NULL) {
+        lb_hint(&b, "task_for_pid 失败：SIP 开启时对受保护进程必然失败，与是否 root 无关");
+        lb_hint(&b, "Apple《Runtime Protections》：受保护进程的 task_for_pid / processor_set_tasks 返回 EPERM");
+        lb_hint(&b, "com.apple.security.cs.debugger 只对带 get-task-allow 的第三方进程有效；com.apple.system-task-ports 仅授予 Apple");
+        lb_hint(&b, "本页上方 task name port / Security token 不依赖 task port");
+        return lb_finish(&b, out);
+    }
+
+    lb_addf(&b, "task port\t%u\t完整 Mach 任务端口（可读内存 / 枚举线程，SIP 下通常拿不到）",
+            (unsigned)task);
+#ifdef TASK_DYLD_INFO
+    {
+        struct task_dyld_info di;
+        memset(&di, 0, sizeof(di));
+        mach_msg_type_number_t c = TASK_DYLD_INFO_COUNT;
+        if (task_info(task, TASK_DYLD_INFO, (task_info_t)&di, &c) == KERN_SUCCESS) {
+            lb_addf(&b, "dyld all_image_info_addr\t0x%llx\tTASK_DYLD_INFO 可用（精确镜像列表见「已加载镜像」页）",
+                    (unsigned long long)di.all_image_info_addr);
+        }
+    }
+#endif
+    mach_port_deallocate(mach_task_self(), task);
+    return lb_finish(&b, out);
+}
+
+/* ------------------------------------------------------------------ */
+/* 审计：内核身份 / 唯一标识 / 审计会话 / 责任进程 / 联盟                */
+/*                                                                     */
+/* 口径对齐 `launchctl procinfo`（它是这些字段的事实来源）：            */
+/*   · 身份 + BSD flags      → proc_pidinfo(PROC_PIDTBSDINFO)          */
+/*   · 唯一标识 (uuid 等)    → proc_pidinfo(PROC_PIDUNIQIDENTIFIERINFO) */
+/*                             私有 flavor（17），公开 SDK 不导出但内核 */
+/*                             长期支持，launchctl 用的也是它；失败时     */
+/*                             整段降级而不是猜。                        */
+/*   · 审计会话 (ASID 等)    → audit token（task_name_for_pid +         */
+/*                             task_info(TASK_AUDIT_TOKEN) → libbsm 的  */
+/*                             audit_token_to_*）。与 launchctl 同源。   */
+/*   · 责任进程              → responsibility_get_pid_responsible_for_pid */
+/*                             （libSystem 导出；TCC 判权用的就是它）      */
+/*   · 联盟 (coalition)      → proc_pidinfo(PROC_PIDCOALITIONINFO)      */
+/*                             私有 flavor（20）。                       */
+/* ------------------------------------------------------------------ */
+
+/* 私有 flavor 编号（xnu bsd/sys/proc_info_private.h，长期稳定） */
+#ifndef PROC_PIDUNIQIDENTIFIERINFO
+#define PROC_PIDUNIQIDENTIFIERINFO 17
+#endif
+#ifndef PROC_PIDCOALITIONINFO
+#define PROC_PIDCOALITIONINFO 20
+#endif
+
+/* 与 xnu struct proc_uniqidentifierinfo 逐字段一致（56 字节） */
+struct cproc_uniqidentifierinfo {
+    uint8_t  p_uuid[16];
+    uint64_t p_uniqueid;
+    uint64_t p_puniqueid;
+    int32_t  p_idversion;
+    int32_t  p_orig_ppidversion;
+    uint64_t p_reserve2;
+    uint64_t p_reserve3;
+};
+
+/* 与 xnu struct proc_pidcoalitioninfo 一致：实测内核返回 40 字节
+ * （2 个类型槽 + 3 个保留槽），按 4 槽写会因返回长度不符被误判成「被拒绝」 */
+struct cproc_pidcoalitioninfo {
+    uint64_t coalition_id[2];
+    uint64_t reserved1;
+    uint64_t reserved2;
+    uint64_t reserved3;
+};
+
+/* 责任进程：libSystem 导出的私有 API（launchctl procinfo 同款） */
+extern pid_t responsibility_get_pid_responsible_for_pid(pid_t pid);
+
+static int read_uniqidentifier(int32_t pid,
+                               struct cproc_uniqidentifierinfo *u)
+{
+    memset(u, 0, sizeof(*u));
+    int ret = (int)proc_pidinfo((int)pid, PROC_PIDUNIQIDENTIFIERINFO, 0,
+                                u, (int)sizeof(*u));
+    return ret == (int)sizeof(*u) ? 0 : -1;
+}
+
+static void uuid_to_string(const uint8_t u[16], char out[37])
+{
+    snprintf(out, 37,
+             "%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-"
+             "%02X%02X%02X%02X%02X%02X",
+             u[0], u[1], u[2], u[3], u[4], u[5], u[6], u[7],
+             u[8], u[9], u[10], u[11], u[12], u[13], u[14], u[15]);
+}
+
+/* 通过 task name port 读 audit token（不需要 task_for_pid）。
+ * 返回 0 成功；失败时 *tok 全零。 */
+static int read_audit_token(int32_t pid, audit_token_t *tok)
+{
+    memset(tok, 0, sizeof(*tok));
+    mach_port_t t = task_name_port(pid);
+    if (t == MACH_PORT_NULL) return -1;
+    mach_msg_type_number_t c = TASK_AUDIT_TOKEN_COUNT;
+    kern_return_t kr = task_info(t, TASK_AUDIT_TOKEN, (task_info_t)tok, &c);
+    mach_port_deallocate(mach_task_self(), t);
+    return kr == KERN_SUCCESS ? 0 : -1;
+}
+
+int cproc_audit_info(int32_t pid, cproc_lines_t *out)
+{
+    line_builder_t b;
+    if (lb_init(&b) != 0) return -1;
+
+    lb_add(&b, "项目\t值\t说明");
+
+    /* ---- 1. 内核身份（BSD 层，不需要 task port） ---- */
     struct proc_bsdinfo bi;
     memset(&bi, 0, sizeof(bi));
-    int ret = proc_pidinfo((int)pid, PROC_PIDTBSDINFO, 0,
-                           &bi, PROC_PIDTBSDINFO_SIZE);
-    lb_add(&b, "项目\t值\t说明");
+    int ret = (int)proc_pidinfo((int)pid, PROC_PIDTBSDINFO, 0,
+                                &bi, PROC_PIDTBSDINFO_SIZE);
     if (ret <= 0) {
         lb_addf(&b, "错误\t-\t无法读取 proc_bsdinfo（%s）", strerror(errno));
+        lb_hint(&b, "进程可能已退出，或属于其他用户 / 受 SIP 保护");
         return lb_finish(&b, out);
     }
 
     lb_addf(&b, "PID\t%d\t短名 %.*s", (int)bi.pbi_pid,
             (int)sizeof(bi.pbi_comm), bi.pbi_comm);
-    lb_addf(&b, "UID / GID\t%d / %d\tRUID %d / RGID %d",
-            (int)bi.pbi_uid, (int)bi.pbi_gid,
+    lb_addf(&b, "EUID / EGID\t%d / %d\t有效（effective）ID：文件访问与权限检查用它",
+            (int)bi.pbi_uid, (int)bi.pbi_gid);
+    lb_addf(&b, "RUID / RGID\t%d / %d\t真实（real）ID：启动者身份，setuid 提权后与 EUID 不同",
             (int)bi.pbi_ruid, (int)bi.pbi_rgid);
     lb_addf(&b, "SVUID / SVGID\t%d / %d\t保存的 set-user/group ID",
             (int)bi.pbi_svuid, (int)bi.pbi_svgid);
-    lb_addf(&b, "PGID / 会话\t%d / -\t进程组", (int)bi.pbi_pgid);
+    lb_addf(&b, "PGID\t%d\t进程组 ID；macOS 不提供数字会话 ID，可用 PGID / TPGID 推断",
+            (int)bi.pbi_pgid);
     lb_addf(&b, "nice\t%d\t调度优先级修正", (int)bi.pbi_nice);
     lb_addf(&b, "BSD flags\t0x%08x\t见下方逐位说明", bi.pbi_flags);
 
@@ -1785,140 +1951,82 @@ int cproc_mach_security(int32_t pid, cproc_lines_t *out)
     }
     lb_addf(&b, "标志位明细\t%s\t按位展开", used ? flagstr : "(none)");
 
-    /* ---- 路径 A：csops 系统调用，完全不需要 task port ----
-     * CS_OPS_* 编号容易记错；xnu bsd/sys/codesign.h 的真实值是
-     * CS_OPS_STATUS=0 / CS_OPS_TEAMID=14 / CS_OPS_CDHASH=5 等。 */
-#ifdef SYS_csops
-/* csops 没有公开包装函数，只能走 syscall(2)。macOS 10.12 起 syscall 被
- * 标记 deprecated，但 Apple 并没有为 CS_OPS_* 提供替代 API（kdebug_signpost
- * 只对应 SYS_kdebug_trace，与代码签名无关）。这里局部关闭该警告，避免每次
- * 构建刷屏；push/pop 限定在这个 #ifdef 块内，不影响文件其它部分。 */
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    {
-        uint32_t csflags = 0;
-        int rc = (int)syscall(SYS_csops, (pid_t)pid,
-                              (unsigned int)CPROC_CS_OPS_STATUS,
-                              &csflags, sizeof(csflags));
-        if (rc == 0) {
-            lb_addf(&b, "CS flags (csops)\t0x%08x\t来自 sysctl 风格的 csops(CS_OPS_STATUS)，无需 task port",
-                    csflags);
-            struct { uint32_t bit; const char *n; } csdefs[] = {
-                { 0x00000001u, "CS_VALID" },
-                { 0x00000002u, "CS_ADHOC" },
-                { 0x00000004u, "CS_GET_TASK_ALLOW" },
-                { 0x00000100u, "CS_HARD" },
-                { 0x00000200u, "CS_KILL" },
-                { 0x00000400u, "CS_CHECK_EXPIRATION" },
-                { 0x00000800u, "CS_RESTRICT" },
-                { 0x00001000u, "CS_ENFORCEMENT" },
-                { 0x00002000u, "CS_REQUIRE_LV" },
-                { 0x00010000u, "CS_RUNTIME (Hardened Runtime)" },
-                { 0x04000000u, "CS_PLATFORM_BINARY (Apple 平台二进制)" },
-            };
-            char csbuf[512] = { 0 };
-            size_t cu = 0;
-            for (size_t i = 0; i < sizeof(csdefs) / sizeof(csdefs[0]); i++) {
-                if (csflags & csdefs[i].bit) {
-                    int k = snprintf(csbuf + cu, sizeof(csbuf) - cu,
-                                     "%s%s", cu ? ", " : "", csdefs[i].n);
-                    if (k > 0) cu += (size_t)k;
-                    if (cu >= sizeof(csbuf) - 1) break;
-                }
-            }
-            lb_addf(&b, "CS 标志位明细\t%s\t按位展开（值为 xnu 常见定义）",
-                    cu ? csbuf : "(无已知标志)");
-        } else {
-            lb_addf(&b, "CS flags (csops)\t-\t调用失败（%s）", strerror(errno));
+    /* ---- 2. 唯一标识：pid 会被复用，这些值不会 ---- */
+    struct cproc_uniqidentifierinfo uq;
+    if (read_uniqidentifier(pid, &uq) == 0) {
+        char uustr[37];
+        uuid_to_string(uq.p_uuid, uustr);
+        lb_addf(&b, "UUID\t%s\t主可执行文件的 UUID", uustr);
+        lb_addf(&b, "unique id\t%llu\t64 位进程唯一标识，不受 pid 复用影响",
+                (unsigned long long)uq.p_uniqueid);
+        lb_addf(&b, "父 unique id\t%llu\t父进程的 unique id",
+                (unsigned long long)uq.p_puniqueid);
+        lb_addf(&b, "idversion\t%d\t每次 exec 递增（内核里的 pidversion）",
+                (int)uq.p_idversion);
+        lb_addf(&b, "原始父 idversion\t%d\t被 reparent 后仍保持不变",
+                (int)uq.p_orig_ppidversion);
+    } else {
+        lb_hint(&b, "唯一标识不可用：PROC_PIDUNIQIDENTIFIERINFO 被拒绝（其他用户 / SIP 受保护进程）");
+    }
+
+    /* ---- 3. 审计会话：audit token 里就是内核判权用的那套身份 ---- */
+    audit_token_t tok;
+    if (read_audit_token(pid, &tok) == 0) {
+        au_asid_t asid = audit_token_to_asid(tok);
+        lb_addf(&b, "审计会话 (ASID)\t%d\t启动审计用；同一登录会话内不变",
+                (int)asid);
+        lb_addf(&b, "审计用户 (auid)\t%d\t登录时分配，与 uid 可能不同",
+                (int)audit_token_to_auid(tok));
+        lb_addf(&b, "审计 euid / egid\t%d / %d\t来自 audit token（与 BSDINFO 应一致）",
+                (int)audit_token_to_euid(tok), (int)audit_token_to_egid(tok));
+        lb_addf(&b, "审计 ruid / rgid\t%d / %d\t来自 audit token",
+                (int)audit_token_to_ruid(tok), (int)audit_token_to_rgid(tok));
+        lb_addf(&b, "audit token\t%08x %08x %08x %08x %08x %08x %08x %08x"
+                    "\tauid / euid / egid / ruid / rgid / pid / asid / pidversion",
+                tok.val[0], tok.val[1], tok.val[2], tok.val[3],
+                tok.val[4], tok.val[5], tok.val[6], tok.val[7]);
+    } else {
+        lb_hint(&b, "审计会话不可用：audit token 需要 task_name_for_pid（其他用户 / SIP 受保护进程常被拒）");
+    }
+
+    /* ---- 4. 责任进程：TCC 判权的实际对象 ---- */
+    pid_t rp = responsibility_get_pid_responsible_for_pid((pid_t)pid);
+    if (rp > 0) {
+        lb_addf(&b, "责任进程 (responsible)\t%d\tTCC 按它判权；等于自身即 self-responsible",
+                (int)rp);
+        char rpath[4 * 1024];
+        rpath[0] = '\0';
+        if (proc_pidpath(rp, rpath, sizeof(rpath)) > 0)
+            lb_addf(&b, "责任进程路径\t%s\t启动它的那条链上的最终责任方", rpath);
+        struct cproc_uniqidentifierinfo ru;
+        if (read_uniqidentifier(rp, &ru) == 0)
+            lb_addf(&b, "责任进程 unique id\t%llu\t责任进程的 unique id",
+                    (unsigned long long)ru.p_uniqueid);
+        lb_addf(&b, "责任归属\t%s\t%s",
+                rp == (pid_t)pid ? "自身（self-responsible）" : "其他进程",
+                rp == (pid_t)pid
+                    ? "权限按本进程的代码签名判，用户授给 App 的授权直接生效"
+                    : "权限按责任进程的代码签名判；经 launchctl / 助手拉起的进程会继承上层");
+    } else {
+        lb_hint(&b, "责任进程查询失败（responsibility_get_pid_responsible_for_pid 不可用）");
+    }
+
+    /* ---- 5. 联盟：系统按 coalition 做资源与 jetsam 记账 ---- */
+    struct cproc_pidcoalitioninfo ci;
+    memset(&ci, 0, sizeof(ci));
+    ret = (int)proc_pidinfo((int)pid, PROC_PIDCOALITIONINFO, 0,
+                            &ci, (int)sizeof(ci));
+    if (ret == (int)sizeof(ci)) {
+        for (int i = 0; i < 2; i++) {
+            if (ci.coalition_id[i] == 0) continue;
+            lb_addf(&b, "联盟 (coalition) id[%d]\t%llu\txnu 按类型索引（0≈resource，1≈jetsam）",
+                    i, (unsigned long long)ci.coalition_id[i]);
         }
-
-        char team[128] = { 0 };
-        rc = (int)syscall(SYS_csops, (pid_t)pid,
-                          (unsigned int)CPROC_CS_OPS_TEAMID,
-                          team, sizeof(team));
-        if (rc >= 0 && team[0])
-            lb_addf(&b, "Team ID (csops)\t%s\t来自 csops(CS_OPS_TEAMID)", team);
-    }
-#pragma clang diagnostic pop
-#else
-    lb_hint(&b, "本 SDK 未导出 SYS_csops，CS flags 请查看「代码签名」页");
-#endif
-
-    /* ---- 路径 B：task_name_for_pid + task_info(TASK_AUDIT_TOKEN) ----
-     * Apple DTS 明确推荐用 task_name_for_pid 取得任意进程的 task name port，
-     * 再用 task_info 读 audit token。task name port 只授予 task_info 能力，
-     * 不能读写内存，因此受 SIP 限制比 task_for_pid 少得多。
-     * 用 dlsym 动态解析，避免不同 SDK 里该函数声明位置不同导致编译/链接失败。 */
-#ifdef TASK_AUDIT_TOKEN
-    {
-        typedef kern_return_t (*tnfp_fn)(mach_port_t, int, mach_port_t *);
-        void *sym = dlsym(RTLD_DEFAULT, "task_name_for_pid");
-        tnfp_fn tnfp = NULL;
-        if (sym) memcpy(&tnfp, &sym, sizeof(tnfp));
-
-        if (!tnfp) {
-            lb_hint(&b, "本系统未导出 task_name_for_pid，Audit Token 不可用");
-        } else {
-            mach_port_t tname = MACH_PORT_NULL;
-            kern_return_t kr = tnfp(mach_task_self(), (int)pid, &tname);
-            if (kr == KERN_SUCCESS && tname != MACH_PORT_NULL) {
-                lb_addf(&b, "task name port\t%u\ttask_name_for_pid 取得（只读，可 task_info）",
-                        (unsigned)tname);
-                audit_token_t tok;
-                memset(&tok, 0, sizeof(tok));
-                mach_msg_type_number_t c = TASK_AUDIT_TOKEN_COUNT;
-                if (task_info(tname, TASK_AUDIT_TOKEN,
-                              (task_info_t)&tok, &c) == KERN_SUCCESS) {
-                    lb_addf(&b, "Audit token\t%08x %08x %08x %08x %08x %08x %08x %08x\t8 × uint32；val[5] 为 pid，val[7] 为 idversion",
-                            tok.val[0], tok.val[1], tok.val[2], tok.val[3],
-                            tok.val[4], tok.val[5], tok.val[6], tok.val[7]);
-                    lb_hint(&b, "Audit token 由 task_name_for_pid 取得，不需要 task_for_pid（SIP 开启时仍可能可用）");
-                } else {
-                    lb_hint(&b, "task_info(TASK_AUDIT_TOKEN) 在 task name port 上被拒绝");
-                }
-#ifdef TASK_SECURITY_TOKEN
-                security_token_t sec;
-                memset(&sec, 0, sizeof(sec));
-                mach_msg_type_number_t sc = TASK_SECURITY_TOKEN_COUNT;
-                if (task_info(tname, TASK_SECURITY_TOKEN,
-                              (task_info_t)&sec, &sc) == KERN_SUCCESS) {
-                    lb_addf(&b, "Security token\t%08x %08x\t2 × uint32",
-                            sec.val[0], sec.val[1]);
-                }
-#endif
-                mach_port_deallocate(mach_task_self(), tname);
-            } else {
-                lb_addf(&b, "task name port\t-\ttask_name_for_pid 失败 (kr=%d)",
-                        (int)kr);
-            }
-        }
-    }
-#endif
-
-    /* ---- 路径 C：完整 task port，仅作加分项 ---- */
-    mach_port_t task = task_for(pid);
-    if (task == MACH_PORT_NULL) {
-        lb_hint(&b, "task_for_pid 失败：SIP 开启时对受保护进程必然失败，与是否 root 无关");
-        lb_hint(&b, "Apple《Runtime Protections》：受保护进程的 task_for_pid / processor_set_tasks 返回 EPERM");
-        lb_hint(&b, "com.apple.security.cs.debugger 只对带 get-task-allow 的第三方进程有效；com.apple.system-task-ports 仅授予 Apple");
-        lb_hint(&b, "本页上方 CS flags / Audit token / BSD 信息均不依赖 task port；签名详情见「代码签名」页");
-        return lb_finish(&b, out);
+    } else {
+        lb_hint(&b, "联盟信息不可用：PROC_PIDCOALITIONINFO 被拒绝");
     }
 
-    lb_addf(&b, "task port\t%u\t完整 Mach 任务端口（可读内存 / 枚举线程，SIP 下通常拿不到）",
-            (unsigned)task);
-#ifdef TASK_DYLD_INFO
-    {
-        struct task_dyld_info di;
-        memset(&di, 0, sizeof(di));
-        mach_msg_type_number_t c = TASK_DYLD_INFO_COUNT;
-        if (task_info(task, TASK_DYLD_INFO, (task_info_t)&di, &c) == KERN_SUCCESS) {
-            lb_addf(&b, "dyld all_image_info_addr\t0x%llx\tTASK_DYLD_INFO 可用（精确镜像列表见「已加载镜像」页）",
-                    (unsigned long long)di.all_image_info_addr);
-        }
-    }
-#endif
-    mach_port_deallocate(mach_task_self(), task);
+    lb_hint(&b, "身份 / 唯一标识字段与 `launchctl procinfo` 同源；进程身份与端口令牌分属「审计」和「Mach」两页");
     return lb_finish(&b, out);
 }
 

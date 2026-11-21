@@ -494,7 +494,14 @@ enum TouchIDHelperServer {
 
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        p.arguments = ["asuser", String(uid), app, "--drop-uid", String(uid)]
+        // **必须带 --respawn-disclaimed**：launchctl asuser 把 App 拉进
+        // 用户 GUI 会话的同时，TCC 的 responsible process 也一路继承到
+        // 本助手（LaunchDaemon，没有 FDA）——用户授给 App 的「完全磁盘
+        // 访问」会失效，root 实例读 TCC.db / 其他用户目录全被拒。
+        // 第一级实例（已在会话里）会用 disclaim 重新 spawn 真正的 App
+        // 再退出，第二级 responsible = 自身，FDA 恢复（见 spawn_self.c）。
+        p.arguments = ["asuser", String(uid), app,
+                       "--respawn-disclaimed", "--drop-uid", String(uid)]
         p.environment = cleanEnvironment
         p.standardOutput = handle ?? FileHandle.nullDevice
         p.standardError = handle ?? FileHandle.nullDevice

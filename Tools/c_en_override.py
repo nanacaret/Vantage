@@ -224,8 +224,20 @@ C_EN_OVERRIDE = {
   "Standard output FD 1",
  "标准输入 FD 0":
   "Standard input FD 0",
+ r"EUID / EGID\t%d / %d\t有效（effective）ID：文件访问与权限检查用它":
+  r"EUID / EGID\t%d / %d\teffective ID — used for file access and permission checks",
+ r"RUID / RGID\t%d / %d\t真实（real）ID：启动者身份，setuid 提权后与 EUID 不同":
+  r"RUID / RGID\t%d / %d\treal ID — the launching user; differs from EUID after setuid elevation",
+ "有效（effective）ID：文件访问与权限检查用它":
+  "effective ID — used for file access and permission checks",
+ "真实（real）ID：启动者身份，setuid 提权后与 EUID 不同":
+  "real ID — the launching user; differs from EUID after setuid elevation",
  "PGID / 会话":
   "PGID / session",
+ r"PGID\t%d\t进程组 ID；macOS 不提供数字会话 ID，可用 PGID / TPGID 推断":
+  r"PGID\t%d\tProcess group ID; macOS has no numeric session ID — infer from PGID / TPGID",
+ "进程组 ID；macOS 不提供数字会话 ID，可用 PGID / TPGID 推断":
+  "Process group ID; macOS has no numeric session ID — infer from PGID / TPGID",
  "标准错误 FD 2":
   "Standard error FD 2",
  "是否进程组首进程":
@@ -363,4 +375,52 @@ C_EN_OVERRIDE = {
 
  "策略短码：TS 分时 / RR 轮转 / FIFO 实时；优先级为「当前 / 基准 / 上限」":
   "Policy codes: TS timeshare / RR round-robin / FIFO real-time; priority is cur / base / max",
+ # ---- 审计页（cproc_audit_info）与 Mach 页拆分 ----
+ "主可执行文件的 UUID": "UUID of the main executable",
+ "64 位进程唯一标识，不受 pid 复用影响": "64-bit unique process ID, immune to PID reuse",
+ "父进程的 unique id": "unique id of the parent process",
+ "每次 exec 递增（内核里的 pidversion）": "incremented on every exec (kernel pidversion)",
+ "被 reparent 后仍保持不变": "unchanged even after reparenting",
+ "启动审计用；同一登录会话内不变": "used for audit startup; stable within a login session",
+ "登录时分配，与 uid 可能不同": "assigned at login, may differ from uid",
+ "来自 audit token": "from audit token",
+ "来自 audit token（与 BSDINFO 应一致）": "from audit token (should match BSDINFO)",
+ "TCC 按它判权；等于自身即 self-responsible": "TCC attributes access to it; equals self means self-responsible",
+ "启动它的那条链上的最终责任方": "the ultimate responsible party in the chain that launched it",
+ "自身（self-responsible）": "self (self-responsible)",
+ "其他进程": "another process",
+ "权限按本进程的代码签名判，用户授给 App 的授权直接生效":
+  "permissions are judged by this process's code signature; grants made to the app apply directly",
+ "权限按责任进程的代码签名判；经 launchctl / 助手拉起的进程会继承上层":
+  "permissions are judged by the responsible process's code signature; processes launched via launchctl or a helper inherit the parent's attribution",
+ "xnu 按类型索引（0≈resource，1≈jetsam）": "indexed by type in xnu (0≈resource, 1≈jetsam)",
+ "本页上方 task name port / Security token 不依赖 task port":
+  "the task name port / security token above do not require a task port",
+ "task_name_for_pid 失败（%s）": "task_name_for_pid failed (%s)",
+ "本系统未导出 task_name_for_pid，或目标属于其他用户 / 受 SIP 保护；审计令牌同样拿不到":
+  "task_name_for_pid not exported by this system, or target belongs to another user / is SIP-protected; audit token unavailable too",
+ "audit token、审计会话、责任进程与唯一标识见「审计」页；签名细节见「代码签名」页":
+  "audit token, audit session, responsible process and unique ID are on the Audit tab; signature details on the Signing tab",
+ "唯一标识不可用：PROC_PIDUNIQIDENTIFIERINFO 被拒绝（其他用户 / SIP 受保护进程）":
+  "Unique ID unavailable: PROC_PIDUNIQIDENTIFIERINFO denied (other user / SIP-protected process)",
+ "审计会话不可用：audit token 需要 task_name_for_pid（其他用户 / SIP 受保护进程常被拒）":
+  "Audit session unavailable: audit token needs task_name_for_pid (often denied for other users / SIP-protected processes)",
+ "联盟信息不可用：PROC_PIDCOALITIONINFO 被拒绝":
+  "Coalition info unavailable: PROC_PIDCOALITIONINFO denied",
+ "审计会话 (ASID)": "audit session (ASID)",
+ "审计用户 (auid)": "audit user (auid)",
+ "审计 euid / egid": "audit euid / egid",
+ "审计 ruid / rgid": "audit ruid / rgid",
+ "父 unique id": "parent unique id",
+ "原始父 idversion": "original parent idversion",
+ "联盟 (coalition) id[%d]": "coalition id[%d]",
+ "责任归属": "attribution",
+ "责任进程 (responsible)": "responsible process",
+ "责任进程 unique id": "responsible process unique id",
+ "责任进程的 unique id": "unique id of the responsible process",
+ "责任进程路径": "responsible process path",
+ "责任进程查询失败（responsibility_get_pid_responsible_for_pid 不可用）":
+  "Responsible-process lookup failed (responsibility_get_pid_responsible_for_pid unavailable)",
+ "身份 / 唯一标识字段与 `launchctl procinfo` 同源；进程身份与端口令牌分属「审计」和「Mach」两页":
+  "Identity / unique-ID fields share their source with `launchctl procinfo`; identity and port tokens live on the Audit and Mach tabs respectively",
 }

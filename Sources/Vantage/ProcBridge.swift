@@ -176,7 +176,7 @@ enum ProcBridge {
     }
 
     enum DetailKind {
-        case openFiles, environment, dylibs, sockets, monitoring, machSecurity
+        case openFiles, environment, dylibs, sockets, monitoring, audit, machSecurity
         case regions, pipePeers, tty, threads   // 完全不依赖 task port
 
         var cacheKey: String {
@@ -186,6 +186,7 @@ enum ProcBridge {
             case .dylibs:       return "dylibs"
             case .sockets:      return "sockets"
             case .monitoring:   return "monitoring"
+            case .audit:        return "audit"
             case .machSecurity: return "mach"
             case .regions:      return "regions"
             case .pipePeers:    return "pipePeers"
@@ -211,6 +212,7 @@ enum ProcBridge {
         case .dylibs:       rc = cproc_dylibs(pid, &lines)
         case .sockets:      rc = cproc_sockets(pid, &lines)
         case .monitoring:   rc = cproc_monitoring(pid, &lines)
+        case .audit:        rc = cproc_audit_info(pid, &lines)
         case .machSecurity: rc = cproc_mach_security(pid, &lines)
         case .regions:      rc = cproc_regions(pid, &lines)
         case .pipePeers:    rc = cproc_pipe_peers(pid, &lines)

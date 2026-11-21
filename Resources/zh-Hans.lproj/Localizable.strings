@@ -49,6 +49,7 @@
 "detail.archSlices" = "架构切片";
 "detail.architecture" = "架构";
 "detail.argv0" = "argv[0]（调用名）";
+"detail.audit" = "审计";
 "detail.bundleExecutable" = "Bundle 声明的可执行文件";
 "detail.bundleRole" = "Bundle 内角色";
 "detail.cmd.bundle" = "# Bundle: {0}\n\n";
@@ -141,6 +142,7 @@
 "detail.protectionMaxProtection" = "保护 / 最大保护";
 "detail.protocolFamily" = "协议 / 族";
 "detail.rawProcessName" = "原始进程名 (raw)";
+"detail.readingAuditInfo" = "正在读取审计 / 身份信息…";
 "detail.readingControllingTerminal" = "正在读取控制终端…";
 "detail.readingEnvironmentVariables" = "正在读取环境变量…";
 "detail.readingMachSigningFlags" = "正在读取 Mach / 签名标志…";

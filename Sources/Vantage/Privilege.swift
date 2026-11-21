@@ -271,6 +271,33 @@ enum Privilege {
         return rc == 0
     }
 
+    /// `--respawn-disclaimed` 隐藏模式的入口。
+    ///
+    /// 助手拉起的路径是 `launchctl asuser <uid> <app> --respawn-disclaimed`：
+    /// 第一级实例已经在用户的 GUI 会话里，但没有 TCC 授权 —— 它的
+    /// responsible process 是助手（LaunchDaemon，没有 FDA）。这里立刻用
+    /// `cproc_spawn_disclaimed` 重新 spawn 真正的 App 并退出；第二级实例
+    /// responsible = 自己，TCC 按 App 自身身份判权，FDA 恢复生效，
+    /// 而 GUI 会话从第一级继承，窗口照常。
+    ///
+    /// 返回给 main.swift 作为退出码：0 = 已交接，非 0 = spawn 失败。
+    static func respawnDisclaimed() -> Int32 {
+        guard let exe = Bundle.main.executablePath
+                ?? CommandLine.arguments.first else {
+            return 1
+        }
+        // 第一级是 helper 以 root 拉起的，--drop-uid 由 noteLaunchArguments
+        // 解析过；拿不到就按当前 uid 兜底（root 登录场景）。
+        let uid = dropTargetUID ?? getuid()
+        let rc = cproc_spawn_disclaimed(exe, uid)
+        if rc != 0 {
+            // stderr 已由 launchctl 重定向到助手的日志文件，写这里能看到
+            FileHandle.standardError.write(
+                Data("respawn-disclaimed failed rc=\(rc) exe=\(exe)\n".utf8))
+        }
+        return rc == 0 ? 0 : 1
+    }
+
     // -----------------------------------------------------------------
     // 以 root 执行固定路径的系统工具
     // -----------------------------------------------------------------

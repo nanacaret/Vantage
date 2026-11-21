@@ -960,7 +960,7 @@ extension CommandLineViewController: RowTextCopying {}
 /// 窗口页」这种错位。顺序只在这里定义，其余地方一律用 `DetailTab(rawValue:)`。
 enum DetailTab: Int, CaseIterable {
     case overview, files, env, dylibs, sockets, monitoring, pipePeers, regions
-    case tty, threads, windows, signing, permissions, mach, command
+    case tty, threads, windows, signing, permissions, audit, mach, command
 
     /// 需要独立采集的页（概览用主表快照、命令页是纯文本）
     static var collectable: [DetailTab] {
@@ -1153,6 +1153,7 @@ final class DetailTabViewController: NSTabViewController {
     private let monitoring = DetailTableViewController()
     private let signing = DetailTableViewController()
     private let permissions = DetailTableViewController()
+    private let audit = DetailTableViewController()
     private let mach = DetailTableViewController()
     private let command = CommandLineViewController()
     private let regions = DetailTableViewController()
@@ -1256,7 +1257,7 @@ final class DetailTabViewController: NSTabViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
 
-        // 15 个页签，全部对应「不需要 task port」或已有降级的采集能力。
+        // 16 个页签，全部对应「不需要 task port」或已有降级的采集能力。
         // 标签统一压到 2 个字，避免 segmented control 在窄窗口下把文字截没。
         // 注意：顺序与 items(for:) / applyLines 的 index 一一对应，插入新页时
         // 必须同步改这两处的 case 编号。
@@ -1274,6 +1275,7 @@ final class DetailTabViewController: NSTabViewController {
             ("detail.window",   "windows",    windows),
             ("detail.signing",   "signing",    signing),
             ("detail.permissions", "permissions", permissions),
+            ("detail.audit", "audit", audit),
             ("=Mach",   "mach",       mach),
             ("detail.command",   "command",    command),
         ]
@@ -1473,6 +1475,7 @@ final class DetailTabViewController: NSTabViewController {
         case .windows:      return windows
         case .signing:      return signing
         case .permissions:  return permissions
+        case .audit:        return audit
         case .mach:         return mach
         case .overview, .command, .none: return nil   // 文本视图，没有行可选
         }
@@ -1554,6 +1557,8 @@ final class DetailTabViewController: NSTabViewController {
                 .lines(PermissionReader.lines(
                     PermissionReader.report(pid: pid, path: path)))
             }]
+        case .audit:
+            return [lineItem("audit",      .audit,        pid: pid)]
         case .mach:
             return [lineItem("mach",       .machSecurity, pid: pid)]
         case .command, .none:
@@ -1716,7 +1721,7 @@ final class DetailTabViewController: NSTabViewController {
     }
 
     private func clearStalePages() {
-        for vc in [files, env, dylibs, sockets, monitoring, mach,
+        for vc in [files, env, dylibs, sockets, monitoring, audit, mach,
                    regions, pipePeers, tty, threads, windows, permissions] {
             vc.showPlaceholder(L("detail.loadedWhenThisTabIs"))
         }
@@ -1735,6 +1740,7 @@ final class DetailTabViewController: NSTabViewController {
         case "tty":        tty.showPlaceholder(L("detail.readingControllingTerminal"))
         case "windows":    windows.showPlaceholder(L("detail.enumeratingThisProcessSWindows"))
         case "mach":       mach.showPlaceholder(L("detail.readingMachSigningFlags"))
+        case "audit":      audit.showPlaceholder(L("detail.readingAuditInfo"))
         case "signing":    signing.showPlaceholder(L("detail.verifyingCodeSignature"))
         case "permissions": permissions.showPlaceholder(L("perm.loading"))
         default: break
@@ -1811,7 +1817,13 @@ final class DetailTabViewController: NSTabViewController {
         case "mach":
             mach.setRows(parse(lines, titles: ["项目", "值", "说明"]),
                          headers: [L("detail.item"), L("detail.value"), L("detail.description")])
-        default: break
+        case "audit":
+            audit.setRows(parse(lines, titles: ["项目", "值", "说明"]),
+                          headers: [L("detail.item"), L("detail.value"), L("detail.description")])
+        default:
+            // 采集了却没有落表 → 页签静默空白（「审计」页就曾这样空了一版）。
+            // Debug 下直接在开发时炸出来，Release 里断言被编译掉，不影响用户。
+            assertionFailure("applyLines: 未处理的详情键 \"\(key)\"，该页签会显示为空白")
         }
     }
 
@@ -1852,7 +1864,7 @@ final class DetailTabViewController: NSTabViewController {
         loadedKeys.removeAll()
         pendingLocate = nil
         overview.setSnapshot(nil, port: nil)
-        for vc in [files, env, dylibs, sockets, monitoring, mach,
+        for vc in [files, env, dylibs, sockets, monitoring, audit, mach,
                    regions, pipePeers, tty, windows, permissions] {
             vc.showPlaceholder(L("detail.noProcessSelected4"))
         }

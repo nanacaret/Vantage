@@ -110,6 +110,14 @@ static char kEnvLang[] = "LANG=C";
 
 static char *const kCleanEnv[] = { kEnvPath, kEnvLang, NULL };
 
+/* 供 spawn_self.c 复用同一份白名单（返回内部静态数组，**不可修改**）。
+ * 三条 spawn 路径（AEXP environ 替换 / Swift Process / 自我重 spawn）
+ * 共用这一份清单，改一处即全局生效。 */
+char *const *cproc_clean_env_vector(void)
+{
+    return kCleanEnv;
+}
+
 /* 把白名单导出给 Swift：条目按 "KEY=VALUE" 以 '\n' 连接写进 buf。
  * Swift 的 Process 路径（runDirect / 助手守护进程）据此构造 environment，
  * 与 cproc_auth_exec 的 environ 替换共用同一份清单。

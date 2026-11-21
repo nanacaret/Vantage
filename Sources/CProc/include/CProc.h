@@ -133,6 +133,10 @@ int  cproc_dylibs       (int32_t pid, cproc_lines_t *out);
 int  cproc_sockets      (int32_t pid, cproc_lines_t *out);
 int  cproc_monitoring   (int32_t pid, cproc_lines_t *out);
 int  cproc_mach_security(int32_t pid, cproc_lines_t *out);
+/* 审计页：内核身份 / 唯一标识（uuid、unique id）/ 审计会话（ASID 等，
+ * 来自 audit token）/ 责任进程（TCC 判权对象）/ coalition。
+ * 口径与 `launchctl procinfo` 一致，尽量不用 task port。 */
+int  cproc_audit_info   (int32_t pid, cproc_lines_t *out);
 /* 以下接口完全不依赖 task port，SIP 开启时对系统进程同样可用 */
 int  cproc_regions      (int32_t pid, cproc_lines_t *out);  /* 内存映射 region 枚举 */
 int  cproc_pipe_peers   (int32_t pid, cproc_lines_t *out);  /* pipe 对端进程解析 */
@@ -259,6 +263,16 @@ uid_t cproc_audit_ruid(const unsigned int token[8]);
  *   *out_from_api 1 = 来自内核 API，0 = 文件标志探测（近似值）
  * 返回 0 成功，-1 无法判断。 */
 int  cproc_sip_config(uint32_t *out_active, int *out_from_api);
+
+/* ---------- 以「自我负责」方式重新拉起自己（spawn_self.c） ----------
+ * TCC 按 responsible process 判权：经 launchctl 拉起的进程会继承调用方
+ * （特权助手）作为 responsible，导致用户授给 App 的 FDA 等授权失效。
+ * 这里用 responsibility_spawnattrs_setdisclaim 让子进程为自己负责：
+ *   · 子进程参数固定为 [exe, "--drop-uid", drop_uid]，环境用 exec 白名单，
+ *     stdio 全指向 /dev/null，且 POSIX_SPAWN_CLOEXEC_DEFAULT 关闭其余 fd；
+ *   · 保留当前会话（不 setsid）—— 调用方必须在目标用户的 GUI 会话里。
+ * 返回 0 成功；其余为 posix_spawn / errno 错误码。 */
+int  cproc_spawn_disclaimed(const char *exe, uint32_t drop_uid);
 
 /* SwiftPM 生成的 module map 可能用 umbrella 目录，也可能只用单个头；
  * 这里显式引入，保证两种情况下 CPerf.h 的声明都会被导出到 Swift。

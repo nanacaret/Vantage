@@ -13,6 +13,15 @@ if CommandLine.arguments.contains("--touchid-helper") {
     TouchIDHelperServer.run()
 }
 
+// 隐藏模式：助手 relaunch 的「第一级」。
+// 助手只能经 `launchctl asuser` 进入用户 GUI 会话，而这条链上 TCC 的
+// responsible process 是助手 —— 助手没有 FDA，root 实例就会失去用户授给
+// App 的「完全磁盘访问」。第一级在这里立刻用 disclaim 重新 spawn 真正的
+// App（responsible = 自己）然后退出。必须在 NSApplication 之前结束。
+if CommandLine.arguments.contains("--respawn-disclaimed") {
+    exit(Privilege.respawnDisclaimed())
+}
+
 // 隐藏模式：以 root 写 TCC 数据库。
 // 由 PermissionReader.writeTCC 经 Authorization Services 启动
 // （TCCStore.runHelper）。必须在创建 NSApplication 之前结束，否则会多开一个

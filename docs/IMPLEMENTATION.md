@@ -67,7 +67,7 @@ iconutil -c icns Assets/Vantage.iconset -o Vantage.app/Contents/Resources/Vantag
 | 进程右键菜单 | 动态构建：检查器 / 窗口定位 / 退出·强制退出·暂停 / **发送信号 ▸** / Finder 显示 / sample 采样 / 复制 PID·命令行·可执行路径 / 配置菜单信号 |
 | 信号 | 31 个 Darwin 信号可选，默认显示 12 个；右键与主菜单「进程」都有子菜单；可配置发送前确认与危险信号强制确认 |
 
-### 详情面板（15 个 Tab）
+### 详情面板（16 个 Tab）
 1. **概览** — 应用图标、名称、状态、架构、内存/CPU/线程/缺页/系统调用/flags/**TTY 摘要**/task port/路径
 2. **文件** — `PROC_PIDLISTFDS` + `PROC_PIDFDVNODEPATHINFO`，列出 vnode 路径、打开标志
 3. **环境** — `KERN_PROCARGS`，按 `KEY / VALUE` 表格展示
@@ -77,11 +77,13 @@ iconutil -c icns Assets/Vantage.iconset -o Vantage.app/Contents/Resources/Vantag
 7. **Pipe** — 全系统 pipe 句柄索引，逐条列出本端/对端句柄、对端进程、自环与「对端已关闭」
 8. **映射** — `PROC_PIDREGIONINFO` 枚举全部 VM region（地址范围、大小、rwx 保护、映射文件），**不需要 task port**
 9. **TTY** — 控制终端 `e_tdev` → `/dev/ttysNNN`、主/次设备号、PGID / TPGID / jobc、前台或后台、FD 0/1/2 是否被重定向、`PROC_TTY_ONLY` 列出同终端所有进程、窗口大小 / termios 波特率与本地模式
-10. **窗口** — `CGWindowListCopyWindowInfo` 按 owner PID 过滤，列出该进程的**全部**窗口（含最小化 / 其他 Space / 隐藏）：窗口号、标题、层、位置尺寸、屏幕状态与 Z 序、共享状态 / Alpha；**不需要屏幕录制授权**也能看到除标题外的全部字段；**双击条目可把该具体窗口前置激活**（需「辅助功能」授权）
-11. **签名** — `Security.framework` 的 `SecCode` / `SecCodeCopySigningInformation`：Identifier、Team ID、CS flags、Entitlements（递归展开）
-12. **权限** — 只列「这个进程自己的权限」：① 签名里的 entitlements（声明了什么）；② 用户级 / 系统级 `TCC.db` 的 `access` 表匹配本进程的记录（SQLite3 系统库直接读，`SELECT *` + 列名映射，兼容各版本 schema），状态按 enabled / disabled 呈现，附 auth_reason 与修改时间；没有记录的服务不再逐条占行（右键「授予其他权限」子菜单仍可新增）。**只读系统正式路径**：缺「完全磁盘访问」时显示「未授权」并给出右键入口直达设置面板（系统没有程序化授予 FDA 的接口）。SIP 文件系统保护关闭时，右键 TCC 行可授予 / 撤销：用 SQLite3 库参数绑定写回；非 root 时经 Authorization Services 启动本二进制的隐藏 `--tcc-write` 模式（同一签名，无需额外 helper）。SIP 与 task port 不在本页：task port 见概览页，SIP 移到「系统信息」窗口（⌘⌥I）。
-13. **Mach** — `proc_bsdinfo` 标志位、`csops(CS_OPS_STATUS)` 的 CS flags、`task_name_for_pid` + `task_info(TASK_AUDIT_TOKEN)` 的审计令牌、SIP 说明
-14. **命令** — 完整 argv 与可执行路径，可复制
+10. **线程** — `PROC_PIDLISTTHREADS` + `PROC_PIDTHREADINFO`，逐线程列名称、状态、用户/内核 CPU 时间、优先级与调度策略（TS / RR / FIFO）
+11. **窗口** — `CGWindowListCopyWindowInfo` 按 owner PID 过滤，列出该进程的**全部**窗口（含最小化 / 其他 Space / 隐藏）：窗口号、标题、层、位置尺寸、屏幕状态与 Z 序、共享状态 / Alpha；**不需要屏幕录制授权**也能看到除标题外的全部字段；**双击条目可把该具体窗口前置激活**（需「辅助功能」授权）
+12. **签名** — `Security.framework` 的 `SecCode` / `SecCodeCopySigningInformation`：Identifier、Team ID、CS flags、Entitlements（递归展开）
+13. **权限** — 只列「这个进程自己的权限」：① 签名里的 entitlements（声明了什么）；② 用户级 / 系统级 `TCC.db` 的 `access` 表匹配本进程的记录（SQLite3 系统库直接读，`SELECT *` + 列名映射，兼容各版本 schema），状态按 enabled / disabled 呈现，附 auth_reason 与修改时间；没有记录的服务不再逐条占行（右键「授予其他权限」子菜单仍可新增）。**只读系统正式路径**：缺「完全磁盘访问」时显示「未授权」并给出右键入口直达设置面板（系统没有程序化授予 FDA 的接口）。SIP 文件系统保护关闭时，右键 TCC 行可授予 / 撤销：用 SQLite3 库参数绑定写回；非 root 时经 Authorization Services 启动本二进制的隐藏 `--tcc-write` 模式（同一签名，无需额外 helper）。SIP 与 task port 不在本页：task port 见概览页，SIP 移到「系统信息」窗口（⌘⌥I）。
+14. **审计** — 进程身份与内核判权依据：`proc_bsdinfo` 的 UID/GID/SVUID/nice/flags（逐位展开）、`PROC_PIDUNIQIDENTIFIERINFO` 的 UUID / unique id / 父 unique id / idversion、`task_name_for_pid` + `task_info(TASK_AUDIT_TOKEN)` 的审计令牌（ASID / auid / euid / egid / ruid / rgid）、`responsibility_get_pid_responsible_for_pid` 的责任进程（TCC 判权对象）、`PROC_PIDCOALITIONINFO` 的联盟 id —— 口径与 `launchctl procinfo` 一致，全部不需要 task port
+15. **Mach** — `proc_bsdinfo` 标志位、`csops(CS_OPS_STATUS)` 的 CS flags、`task_name_for_pid` + `task_info(TASK_AUDIT_TOKEN)` 的审计令牌、SIP 说明
+16. **命令** — 完整 argv 与可执行路径，可复制
 
 **系统信息窗口（⌘⌥I）** 承载整机属性：主机名 / 型号 / 芯片 / 内存 / macOS 与内核版本 / 运行时间（`sysctl` + `ProcessInfo`），以及 SIP 活动配置位图：优先 `dlsym` libSystem 的 `csr_get_active_config`（内核位图，逐项可见），拿不到时探测 `/System/Library` 的 `UF_RESTRICTED` 标志；不调用 csrutil。
 
@@ -97,7 +99,7 @@ iconutil -c icns Assets/Vantage.iconset -o Vantage.app/Contents/Resources/Vantag
 每个 Tab 都有独立过滤框（**检查器里默认收起，⌘F 唤出并聚焦**，主窗口详情区常显）；
 路径格右键可「在 Finder 中显示 / 复制路径」，详见「详情表右键菜单」章节。
 双击进程行可打开**独立检查器窗口**（Activity Monitor 风格）。
-页签统一压到 2 个字；15 个页签由 `TabStripView` 排布。两种布局：**左侧竖排**（默认，Finder 侧边栏式，条目多时可滚动）与 **经典（横向多行）**——后者再分「自动折行」与「每行固定 N 个」。偏好设置页签用同一个控件。
+页签统一压到 2 个字；16 个页签由 `TabStripView` 排布。两种布局：**左侧竖排**（默认，Finder 侧边栏式，条目多时可滚动）与 **经典（横向多行）**——后者再分「自动折行」与「每行固定 N 个」。偏好设置页签用同一个控件。
 
 **详情是惰性加载的**：选中进程时只更新「概览 / 命令」（纯快照、零系统调用），
 其余各页在**第一次切到该页时**才采集，结果按 `(pid, 页)` 缓存（FD/socket/pipe 2 秒，
@@ -386,8 +388,9 @@ restricted 标志的进程）必然失败，与运行身份无关：
 |---|---|---|---|
 | 已加载镜像 | `TASK_DYLD_INFO` + `mach_vm_read_overwrite` | **`proc_pidinfo(PROC_PIDREGIONINFO)` 迭代 + `proc_regionfilename`** | `dylibs_via_regions_noport()` |
 | 完整内存映射 | `vm_region_recurse_64` | **`PROC_PIDREGIONINFO`（`pri_address + pri_size` 步进）** | `cproc_regions()` →「内存映射」页 |
-| Audit / Security Token | `task_info(TASK_AUDIT_TOKEN)` on task port | **`task_name_for_pid()` + `task_info`**（task name port 只放行 `task_info`） | `cproc_mach_security()` |
-| CS flags / Team ID | 容易误用的 `CS_OPS_*` 编号 | **`syscall(SYS_csops, CS_OPS_STATUS/CS_OPS_TEAMID)`** + Security.framework | `cproc_mach_security()` |
+| Audit / Security Token | `task_info(TASK_AUDIT_TOKEN)` on task port | **`task_name_for_pid()` + `task_info`**（task name port 只放行 `task_info`） | `cproc_mach_security()` / `cproc_audit_info()` |
+| 审计会话 / 责任进程 / 唯一标识 | 无公开 API | **audit token（ASID/auid）+ `responsibility_get_pid_responsible_for_pid` + `PROC_PIDUNIQIDENTIFIERINFO`(17) + `PROC_PIDCOALITIONINFO`(20)**，口径同 `launchctl procinfo` | `cproc_audit_info()` →「审计」页 |
+| CS flags / Team ID | 容易误用的 `CS_OPS_*` 编号 | **`SecCodeCopySigningInformation`（kSecCodeInfoFlags）**，csops 仅作兜底 | `SigningReader.swift` →「签名」页 |
 | 签名 / Entitlements / CDHash | — | `SecCodeCopyGuestWithAttributes` + `SecCodeCopySigningInformation` | `SigningReader.swift` |
 | 控制终端 / 会话 / 作业控制 | — | `proc_bsdinfo.e_tdev` / `e_tpgid` / `pbi_pgid` + `devname_r` + `PROC_TTY_ONLY` | `cproc_tty()` →「TTY」页 |
 | 命令行 / 环境变量 | — | `KERN_PROCARGS2` / `KERN_PROCARGS` | `proc_collect.c` / `proc_detail.c` |
@@ -732,6 +735,8 @@ C 采集层以 macOS SDK / xnu 公开头文件为准。以下列出这些接口�
 | **Mach 页一堆「提示」行把数据挤到下面**（例如：`Audit token 由 task_name_for_pid 取得…`、`task_for_pid 失败：SIP 开启时…` 等 5 行，第一列全是「提示」） | `lb_hint()` 把说明性文字当普通数据行输出，没法单独隐藏；而且「提示」本地化后会变成 `Hint`，**不能拿显示文字当过滤依据** | C 层改用稳定 ASCII 标记 `CPROC_HINT_TAG = "__hint__"`；Swift `parse()` 先按中文 `titles` 剥表头，再按标记过滤，**默认隐藏**。偏好「通用 → 界面 → 在详情页显示提示行」可打开，勾选后立即重采。空状态占位（「未选择进程」「正在采集…」）是 Swift 侧 `setPairs` 生成的、无标记，照常显示，详见专节 |
 | **只有中文界面** | 全部 UI 字符串是中文硬编码字面量 | 实现 i18n：语义 key + 双 `.lproj` + 内嵌兜底表，运行时切换「跟随系统 / 简体中文 / English」；菜单重建、静态控件就地转换、详情页重采，无需重启，详见专节 |
 | **`swift build` 报 6 类语法错误**（`expected ',' separator` / `raw value for enum case must be a literal` / `conditional binding must have Optional type` 等） | 初版 i18n 用正则 `"(?:\\.\|[^"\\])*"` 机械地把源码里含中文的字符串包成 `L("…")`。这个正则**在 Swift 字符串插值内嵌双引号处截断**：`"# 可执行文件: \(snap?.exepath ?? "—")\n"` 被切成 `L("# 可执行文件: \(snap?.exepath ?? ")—")\n"`，源码直接语法崩坏；另外 `case control = L("终止 / 控制")` 违反「enum raw value 必须是编译期字面量」，`alternateTitle` 在 macOS 26 SDK 是非 Optional，`if let` 报错 | ① 按反馈重做为**语义 key**：中文是 `.strings` 的 value，源码只写 `L("detail.cmd.executable", arg)`，格式串用 `{0}` 占位 —— 插值表达式不再混进字符串字面量，从根上消除截断；② `SignalGroup.rawValue` 改稳定 ASCII key，显示名走 `title → L(rawValue)`；③ `alternateTitle` 改普通 `let`；④ 迁移改用**能正确处理 `\(` 插值嵌套引号的 Swift 字符串扫描器**（`Tools/` 外的一次性脚本），并验证全项目 0 个未闭合字符串、624 处 `L()` 参数与占位符一致；⑤ 保护区（`titles:` 中文协议数组、列宽关键词数组）显式还原，不被文案替换波及 |
+
+| **「审计」页签永远空白**（`cproc_audit_info` 能采到 20+ 行，界面却一行不显示） | `applyLines()` 是「采集 key → 表格」的唯一落点：`items(for:)` 已经为 `.audit` 配好 `lineItem("audit", .audit, …)`，但 `applyLines` 的 switch 少了 `case "audit"`，直接命中 `default: break`，采到的行被静默丢弃；同一处疏漏也漏了审计页在「切换进程 / 正在采集 / 未选择进程」三处占位列表里的登记 | ① 补 `case "audit"`（项目 / 值 / 说明 三列，与 TTY / Mach 同构）与三处占位；② `default` 改为 `assertionFailure`：Debug 下新页签忘写分支会立刻炸出来，Release 断言被编译掉、不影响用户。教训：详情页签是「C 采集 key」与「Swift 落表分支」两张必须同步的表，靠约定容易漏，改断言兜住 |
 
 排序（点表头）属于主动改变视图顺序，仍会回到顶部——这是刻意的，不算滚动状态丢失。
 
@@ -1622,9 +1627,10 @@ suid=0（提权上来的进程都满足）→ setegid(用户) → seteuid(用户
 **能做**：`ping`（回报自身协议号与安装时记录的版本）；`exec`（白名单 `/sbin/ifconfig`、
 `/sbin/route`、`/bin/launchctl`，参数原样交给 `execve`，
 不经 shell；外加调用方自己的可执行文件、且仅限 `--tcc-write`）；`relaunch`
-（`launchctl asuser <uid> <app> --drop-uid <uid>`，在用户图形会话里以 root 启动）。
+（`launchctl asuser <uid> <app> --respawn-disclaimed --drop-uid <uid>`，
+在用户图形会话里以 root 启动）。
 
-`relaunch` 的两处细节：
+`relaunch` 的三处细节：
 
 - **路径比较必须规范化**：客户端传的是 `Bundle.main.executablePath`（可能是带符号链接的写法，
   例如 `/tmp/...`），助手拿到的是 `proc_pidpath`（内核视角的真实路径，`/private/tmp/...`）。
@@ -1632,6 +1638,16 @@ suid=0（提权上来的进程都满足）→ setegid(用户) → seteuid(用户
 - **要确认实例真的起来了**：`launchctl asuser` 会陪跑到子进程退出，所以判据是
   「进程表里出现 uid=0 且路径相同的实例」**或**「launchctl 自己还活着」；
   只有它提前退出才算失败，并把它的 stderr 原样回给界面（而不是笼统的「已取消」）。
+- **TCC 的 responsible process 必须挪到 App 自己身上**。经 `launchctl asuser`
+  拉起的进程，responsible 会一路继承到助手（LaunchDaemon）——助手是没有 bundle 的
+  裸可执行文件，用户在「完全磁盘访问」里授给 Vantage.app 的授权会全部失效，
+  root 实例读 TCC.db / 其他用户目录全被拒。所以拉起链多了一级：
+  第一级（已在用户会话里）收到 `--respawn-disclaimed` 后立刻用
+  `posix_spawn` + 私有 API `responsibility_spawnattrs_setdisclaim(attrs, 1)`
+  重新 spawn 真正的 App 再退出；第二级 responsible = 自己，TCC 按 App 自身
+  身份判权，FDA 恢复（GUI 会话从第一级继承）。见 `Sources/CProc/spawn_self.c`。
+  顺带把 stdio 全部指向 `/dev/null` 并启用 `POSIX_SPAWN_CLOEXEC_DEFAULT`，
+  子进程不再继承 launchctl 的 socketpair / 日志 fd。
 
 **重启流程的两个坑**（都踩过，也是本节存在的理由）：
 
