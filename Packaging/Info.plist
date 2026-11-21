@@ -23,10 +23,13 @@
     <string>Vantage</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <!-- 版本号由 Scripts/build_app.sh <version> 注入到产物里这份 plist（
+         inject_version.py）；这里的 nightly 只是占位/本地默认值，发布版本的
+         真实来源是 git tag（v1.2.5 → 1.2.5）。两个 key 始终同值。 -->
     <key>CFBundleShortVersionString</key>
-    <string>1.2.4</string>
+    <string>nightly</string>
     <key>CFBundleVersion</key>
-    <string>1.2.4</string>
+    <string>nightly</string>
     <key>LSMinimumSystemVersion</key>
     <string>12.0</string>
     <key>NSAccessibilityUsageDescription</key>

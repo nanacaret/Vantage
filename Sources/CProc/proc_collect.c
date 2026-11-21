@@ -461,6 +461,7 @@ int cproc_collect(cproc_system_t *out)
         memset(&ti, 0, sizeof(ti));
         if (proc_pidinfo(pid, PROC_PIDTASKINFO, 0,
                          &ti, PROC_PIDTASKINFO_SIZE) == PROC_PIDTASKINFO_SIZE) {
+            it->taskinfo_ok = 1;
             it->rss         = ti.pti_resident_size;
             it->vss         = ti.pti_virtual_size;
             it->cpu_user_ns = cproc_abs_to_ns(ti.pti_total_user);

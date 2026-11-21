@@ -308,6 +308,12 @@ Vantage/
 │   │   ├── proc_arch.c                 # Mach-O FAT / thin 头解析 → 架构切片（带缓存）
 │   │   ├── cproc_l10n_data.c           # 生成：C 层运行时文本的语义 key + 双语表
 │   │   └── cproc_l10n_data.h           # 生成：查表接口（C 层私有头，不放 include/）
+│   ├── VantageKit/                    # 命令行共享层（不链接 AppKit）
+│   │   ├── SystemBridge.swift         # cproc_snapshot_t → Swift 值类型
+│   │   ├── Bilingual.swift            # C 层双语标记解码（CLI 的输出语言）
+│   │   └── TextTable.swift            # 等宽表（CJK 宽度）+ 人类可读格式
+│   ├── VantageCLI/                     # vantage（SPM 产物 vantage-cli）：list/info/detail/tree/stats/net/signal
+│   ├── VantageMCP/                     # vantage-mcp：stdio JSON-RPC
 │   └── Vantage/
 │       ├── main.swift / AppDelegate.swift / AppContext.swift
 │       ├── Models.swift / ProcBridge.swift / ProcessStore.swift
@@ -374,8 +380,11 @@ chmod +x Scripts/build_app.sh
 open build/Vantage.app
 ```
 
-`Scripts/build_app.sh` 会 `swift build -c release`，把可执行文件与 `Packaging/Info.plist` 组装成
-`build/Vantage.app`，并做 ad-hoc 签名。
+`Scripts/build_app.sh [version]` 会 `swift build -c release`，把可执行文件与
+`Packaging/Info.plist` 组装成 `build/Vantage.app`，并做 ad-hoc 签名。版本号也在这里
+注入（省略参数 → `nightly`，CI 传 tag 去掉 `v` 的值）：`Scripts/inject_version.py`
+把同一个值写进 `Sources/VantageCLI/BuildVersion.swift` 的常量和产物那份
+Info.plist（`PlistBuddy`）。源 plist 里是 `nightly` 占位，仓库不写死发布版本。
 
 > 也可以用 `swift package generate-xcodeproj`（旧工具链）或直接在 Xcode 里
 > `File → Open` 这个目录，用 SwiftPM 原生支持打开。
@@ -1965,6 +1974,54 @@ MTU 68…65535、网卡名必须在当前网卡列表里。校验通过后以 ar
 > 系统调用，字符串分配只占很小一块 —— 这轮优化的收益体现在**分配次数**（每秒少
 > 约两千次 malloc/free）与 `L()` 的调用开销上，而不是 collect 的墙钟时间。
 
+## 命令行（vantage）
+
+三个前端共用一套采集层，区别只在「谁在用」：
+
+| 前端 | target | 依赖 | 场景 |
+|---|---|---|---|
+| `Vantage.app` | `Sources/Vantage` | CProc + AppKit | 交互式排查 |
+| `vantage`（SPM 产物 `vantage-cli`） | `Sources/VantageCLI` | VantageKit | 脚本、管道、远程 shell |
+| `vantage-mcp` | `Sources/VantageMCP` | VantageKit | MCP 客户端（Claude Desktop / Cursor） |
+
+后两者共用 `Sources/VantageKit`：快照桥（`SystemBridge`）、C 层双语标记解码
+（`Bilingual`）、等宽表格排版（`TextTable`）。**不链接 AppKit**，所以单独跑、
+放到 CI 里跑都不用起 GUI。命令参考与 JSON 形状见 [CLI.md](CLI.md)。
+
+几个设计决定：
+
+* **bundle 里叫 `vantage`，SPM 产物叫 `vantage-cli`**：GUI 主程序在
+  `Contents/MacOS/Vantage`，两个命令行工具放 `Contents/MacOS/bin/`
+  （`vantage` / `vantage-mcp`）—— 目录分开了，`vantage` 和 `Vantage` 就不再冲突
+  （大小写不敏感只在同一目录内生效）。放 `MacOS/bin` 而不是 `Helpers/` 或
+  `Resources/bin/` 有两条依据：Apple《Bundle Programming Guide》Table 2-5 明确说
+  `MacOS` 里可以放额外命令行工具，而 `Resources` / `SharedSupport` 的定义是资源
+  文件；codesign 的 nested code 规则只覆盖 `Frameworks|SharedFrameworks|PlugIns|
+  XPCServices|Helpers|MacOS|Library/...`，实测同一个 Mach-O 放 `MacOS/bin` 进
+  `CodeResources` 的 `files2`（`cdhash` requirement，按代码校验），放
+  `Resources/bin` 只进 `files`（文件哈希，按数据封存）——后者签名坏了
+  `--verify --deep` 也不报错，所以 `Resources/app/bin/code`（VS Code）这种放法
+  在签名上是打折的。构建产物仍叫 `vantage-cli`，因为 `.build/release/` 下
+  `vantage` 会和 `Vantage` 撞车。签名顺序因此是「先 `MacOS/bin` 里的工具、后整个
+  bundle」：外层签名会把 nested code 的签名封进去，反过来会让外层签名当场失效。
+* **版本是编译期常量，且只有一个来源**：`build_app.sh <version>`（省略 → `nightly`）
+  把版本传给 `Scripts/inject_version.py`，后者改写
+  `Sources/VantageCLI/BuildVersion.swift` 的 `marketing` 常量、并 `PlistBuddy` 写产物
+  的 Info.plist。所以 `--version` 不查 plist、不解析路径 —— 二进制被软链、被拷走、
+  甚至 bundle 被删掉都报对版本；`swift build` 没走脚本时用仓库里的 `nightly`。
+* **子命令只认白名单**：`vantage -f Vantage` 里的 `Vantage` 是 `-f` 的值，不能被当成
+  子命令 —— 解析器按「遇到取值的开关就吃掉下一个 token」扫，其余非选项 token
+  才是子命令；既不匹配命令也不像选项时直接报错，不会静默退化成 list。
+* **`0` 不是哨兵**：`signal` 明确拒绝 `pid <= 0`（`kill(0, sig)` 打整个进程组、
+  `kill(-1, …)` 打所有进程），但 `info 0` / `detail 0` 是合法的 —— 和 GUI 里
+  kernel_task 的处理保持一致。
+* **读不到 ≠ 0**：`cproc_snapshot_t` 新增 `taskinfo_ok`，`PROC_PIDTASKINFO` 失败时
+  CLI 的 `THR` / `MEM` / `TIME` 显示 `—`，JSON 里给 `null`。非 root 读 launchd、
+  kernel_task 这类进程就是这个情况，之前的 `0 B / 0 线程`会误导人。
+* **双语在这里解码**：C 层输出的 `\x1eL:<key>\x1f<zh>\x1f<en>\x1e` 由
+  `Bilingual.decode` 按 `VANTAGE_LANG` → `LC_ALL` → `LANG` 选一份，默认英文；
+  所以 CLI 输出是完整句子，不会中英混排。
+
 ## MCP 服务（vantage-mcp）
 
 独立可执行 target（`Sources/VantageMCP`），stdio + 换行分隔的 JSON-RPC 2.0，
@@ -1981,7 +2038,7 @@ MTU 68…65535、网卡名必须在当前网卡列表里。校验通过后以 ar
 | `system_stats` | - | CPU / 内存 / swap / load / 进程与线程数 |
 
 接入 Claude Desktop / Cursor 时把 command 指向 `vantage-mcp`（或
-`build/Vantage.app/Contents/MacOS/vantage-mcp`，见打包脚本）即可。stdout 只输出
+`build/Vantage.app/Contents/MacOS/bin/vantage-mcp`，见打包脚本）即可。stdout 只输出
 协议消息，日志一律走 stderr。
 
 ## AppleScript 接口

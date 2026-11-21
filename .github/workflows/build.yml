@@ -74,10 +74,10 @@ jobs:
             Sources/CProc/cproc_l10n_data.c \
             Sources/CProc/cproc_l10n_data.h
 
-      - name: Build .app
-        run: ./Scripts/build_app.sh
-
-      - name: Create DMG
+      # 版本号只在这里决定一次：tag v1.2.5 → 1.2.5，其它触发（PR / 手动）→ nightly。
+      # 同一个值传给 build_app.sh（进 Info.plist 与 CLI 的 --version），也用作 DMG
+      # 文件名与 Release 标题 —— 三处不会漂。
+      - name: Resolve version
         id: meta
         run: |
           set -euo pipefail
@@ -91,15 +91,24 @@ jobs:
             VERSION="nightly"
             DMG="Vantage-nightly-${ARCH}.dmg"
           fi
-          mkdir -p dist
-          ./Scripts/make_dmg.sh "dist/${DMG}"
-          test -f "dist/${DMG}" && test -f "dist/${DMG}.sha256"
           {
             echo "version=${VERSION}"
             echo "arch=${ARCH}"
             echo "dmg=dist/${DMG}"
           } >> "$GITHUB_OUTPUT"
-          echo "✓ dist/${DMG} (${ARCH})"
+          echo "✓ version=${VERSION} arch=${ARCH}"
+
+      - name: Build .app
+        run: ./Scripts/build_app.sh "${{ steps.meta.outputs.version }}"
+
+      - name: Create DMG
+        run: |
+          set -euo pipefail
+          DMG="${{ steps.meta.outputs.dmg }}"
+          mkdir -p dist
+          ./Scripts/make_dmg.sh "${DMG}"
+          test -f "${DMG}" && test -f "${DMG}.sha256"
+          echo "✓ ${DMG} (${{ steps.meta.outputs.arch }})"
 
       - uses: actions/upload-artifact@v4
         with:

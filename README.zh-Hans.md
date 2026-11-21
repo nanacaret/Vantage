@@ -38,7 +38,7 @@ Vantage 两者都不需要，且只是一个**可本地构建的单个 `.app`**�
 | 模块 | 内容 |
 |---|---|
 | 进程列表 | 树形 / 扁平、14 列三态排序、0.5–5 秒刷新、过滤、正则搜索、本地化名 + 原始可执行名、可选显示与 bin 不同的 argv[0] 调用名、已退出进程高亮 |
-| 检查器 | 15 个页签：概览、文件、环境、镜像、网络、监控、Pipe 对端、内存映射、TTY、线程、窗口、签名、权限、Mach、命令；每页可独立过滤（过滤框默认收起，⌘F 唤出并聚焦），路径格右键「在 Finder 中显示」/「复制路径」 |
+| 检查器 | 16 个页签：概览、文件、环境、镜像、网络、监控、Pipe 对端、内存映射、TTY、线程、窗口、签名、权限、审计、Mach、命令；每页可独立过滤（过滤框默认收起，⌘F 唤出并聚焦），路径格右键「在 Finder 中显示」/「复制路径」 |
 | 信号 | 右键菜单 / 主菜单，31 个 Darwin 信号可配置显示（默认 12 个）、确认策略、暂停继续、`sample` 采样 |
 | 性能监控（⌘⌥M） | CPU/GPU/ANE/DRAM 功耗、整机功率（SMC `PSTR`）、CPU/GPU 温度、P-state residency 分簇频率、磁盘与网络吞吐、逐通道诊断 |
 | 全局搜索（⌘⇧F） | 先冻结进程快照，再对所有进程逐页取样；结果可跳回对应页签与行 |
@@ -51,6 +51,7 @@ Vantage 两者都不需要，且只是一个**可本地构建的单个 `.app`**�
 | 提权 | 工具栏「提权」以 root 重启（Authorization Services，系统授权对话框，不用 sudo）；权限不足时顶部内联提示 + 一键提权，不弹窗。左下角的锁与系统工具一致：点一下预先授权（之后特权操作不再询问），再点一下吊销；从普通用户提权上来的 root 实例提供「降权为用户」（`setgid` / `initgroups` / `setuid`） |
 | Touch ID 提权（可选） | 默认关闭。开启时安装一个 root LaunchDaemon 辅助工具（需输一次密码），之后提权改为指纹确认。助手只接受「当前桌面登录的**管理员**用户 + 代码签名 cdhash 与自身完全一致」的调用方（非管理员、非桌面用户一律拒绝，防止借助手提权），且只执行白名单工具（`ifconfig` / `route` / `launchctl`）与本 App 的隐藏 `--tcc-write` 模式；关掉开关即 bootout 并删除 |
 | MCP 服务 | 独立可执行 `vantage-mcp`（stdio JSON-RPC）：列进程、读详情页、发信号、网卡与路由、系统总览，Claude Desktop / Cursor 可直接接入，不要求 GUI 在跑 |
+| 命令行 | `vantage`（随 bundle 发布在 `Vantage.app/Contents/MacOS/bin/vantage`）：`list` / `info` / `detail` / `tree` / `stats` / `net` / `signal`，给人看的是对齐等宽表，给脚本的是 `--json`；不要求 GUI 在跑，采集器与检查器同源 |
 | AppleScript | `Resources/Vantage.sdef`：`list processes`、`process info`、`quit process`、`list interfaces`、`list routes` |
 | 已退出进程 | 宽限期内双击/右键仍可打开检查器：概览与命令页回放退出前快照，惰性页只回放「退出前采过的」数据 |
 | 线程页 | 逐个线程列出 TID / 名称 / 状态 / CPU / 用户态与内核态时间 / 优先级与调度策略（PROC_PIDLISTTHREADS + PROC_PIDTHREADINFO），切换到该页才采集 |
@@ -110,12 +111,44 @@ swift run                       # 调试运行，不生成 .app
 open build/Vantage.app
 ```
 
-`Scripts/build_app.sh` 会组装 bundle（`Packaging/Info.plist`、`Resources/*.lproj`、由
+`Scripts/build_app.sh [version]` 会组装 bundle（`Packaging/Info.plist`、`Resources/*.lproj`、由
 `iconutil` 生成的 `Assets/Vantage.icns`）
 并做 ad-hoc 签名，全程不需要 root。同一目录内增量编译通常 1–3 秒。
 
+版本号是构建参数而不是仓库里的常量：`./Scripts/build_app.sh 1.2.5`，不传就是 `nightly`。
+同一个值会写进产物 Info.plist 和 CLI 编译进去的 `--version`；版本历史就是那些 `v*` tag。
+
 > **Bundle ID**：`io.github.nanacaret.Vantage`，与发布组织一致。
 > 注意改 ID 会让已保存的偏好、配色、列宽与窗口位置重置一次。
+
+## 命令行
+
+`Scripts/build_app.sh` 除了 GUI 和 MCP 服务，还会一起打包命令行前端：
+
+```bash
+CLI=build/Vantage.app/Contents/MacOS/bin/vantage
+
+$CLI                          # 进程列表（等同 list）
+$CLI -f Chrome -s mem -n 10   # 过滤 + 排序 + 限行
+$CLI info 501 --json          # 单个进程，机器可读
+$CLI detail 501 threads       # 某个检查器页
+$CLI tree -f launchd          # 进程树（自动带上命中行的祖先）
+$CLI net routes               # 网卡 / 地址 / 路由表
+$CLI stats                    # CPU、内存、Swap、负载
+$CLI signal 1234 TERM         # 发信号
+```
+
+两个命令行工具放 `Contents/MacOS/bin/`（`vantage`、`vantage-mcp`）：Apple 的 bundle
+文档允许把额外的命令行工具放进 `Contents/MacOS`，而 `codesign` 只把 `MacOS/` 下的东西
+当 nested code 校验（放 `Contents/Resources` 只会被当数据封存，签名坏了也查不出来）。
+想直接敲 `vantage` 就做个软链：
+
+```bash
+sudo ln -sf "$PWD/build/Vantage.app/Contents/MacOS/bin/vantage" /usr/local/bin/vantage
+```
+
+文本输出是等宽表（中文按两格宽对齐；非 root 读不到的字段显示 `—`），`--json` 用同名字段、
+读不到给 `null` 而不是假的 `0`。完整参考见 [docs/CLI.md](docs/CLI.md)。
 
 ## 预构建 DMG
 
@@ -168,6 +201,10 @@ Sources/CProc/     C 采集层：扁平标量结构 + \t 分隔文本行
   perf.c           采样线程：IOReport / SMC / DVFS / 公开计数器
   cproc_config.c   偏好下发的运行时 limits
 
+Sources/VantageKit/  命令行共享层：快照桥、双语标记解码、表格排版
+Sources/VantageCLI/  `vantage`（SPM 产物名 `vantage-cli`）— list / info / detail / tree / stats / net / signal
+Sources/VantageMCP/  `vantage-mcp`（stdio JSON-RPC 工具）
+
 Sources/Vantage/  Swift + AppKit 界面（只通过标量 accessor 访问 C 层）
 Resources/        en.lproj / zh-Hans.lproj Localizable.strings
 Tools/            生成器（i18n 主表、C 层双语表、图标构建）
@@ -200,6 +237,7 @@ python3 Tools/build_l10n.py
 | [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md) | 数据来源、统计口径、SIP 替代方案、各窗口实现取舍 |
 | [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) | SDK 差异、构建约束、已知限制、可定制点 |
 | [docs/PUBLISHING.md](docs/PUBLISHING.md) | 仓库现状、Release 流程与维护说明 |
+| [docs/CLI.md](docs/CLI.md) | `vantage` 参考：命令、开关、JSON 形状、退出码 |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 贡献指南 |
 | [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) | 参考与致谢 |
 | [.github/workflows/build.yml](.github/workflows/build.yml) | CI：编译、DMG、nightly / tag Release |

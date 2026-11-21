@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
-import CProc
 import Foundation
+import VantageKit
 
 // ---------------------------------------------------------------------
 // vantage-mcp —— MCP（Model Context Protocol）stdio 服务
@@ -193,8 +193,11 @@ enum Tools {
             let cmd = p.cmdline.isEmpty ? p.comm : p.cmdline
             out += pad("\(p.pid)", 7) + pad("\(p.ppid)", 7)
                 + pad(SystemBridge.userName(p.uid), 12)
-                + pad(p.state, 10) + pad(humanBytes(p.rss), 10)
-                + pad("\(p.threads)", 6)
+                + pad(p.state, 10)
+                // taskinfo 读不到（别人的进程 / SIP 保护）时给 "—"，
+                // 0 会被误读成「真的没占内存、没开线程」
+                + pad(p.taskinfoOK ? humanBytes(p.rss) : "—", 10)
+                + pad(p.taskinfoOK ? "\(p.threads)" : "—", 6)
                 // 命令行可能几千字符（Electron 的 --js-flags 之类），
                 // 对模型来说前 120 字符足够判断身份
                 + (cmd.count > 120 ? String(cmd.prefix(120)) + "…" : cmd) + "\n"
@@ -218,9 +221,11 @@ enum Tools {
         out += "pid / ppid:  \(p.pid) / \(p.ppid)\n"
         out += "user:        \(SystemBridge.userName(p.uid)) (\(p.uid))\n"
         out += "state:       \(p.state)\n"
-        out += "rss / vss:   \(humanBytes(p.rss)) / \(humanBytes(p.vss))\n"
-        out += "threads:     \(p.threads)\n"
-        out += "cpu time:    \(humanDuration(p.cpuTimeNS))\n"
+        out += "rss / vss:   " + (p.taskinfoOK
+            ? "\(humanBytes(p.rss)) / \(humanBytes(p.vss))"
+            : "— (needs root for this process)") + "\n"
+        out += "threads:     " + (p.taskinfoOK ? "\(p.threads)" : "—") + "\n"
+        out += "cpu time:    " + (p.taskinfoOK ? humanDuration(p.cpuTimeNS) : "—") + "\n"
         out += "started:     \(fmt.string(from: start))\n"
         out += "executable:  \(p.exepath.isEmpty ? "-" : p.exepath)\n"
         out += "command:     \(p.cmdline.isEmpty ? "-" : p.cmdline)\n"

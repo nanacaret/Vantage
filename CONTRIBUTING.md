@@ -13,7 +13,7 @@
 ```bash
 swift build -c release
 swift run
-./Scripts/build_app.sh
+./Scripts/build_app.sh           # 省略版本 → nightly；发布构建传 tag 版本：build_app.sh 1.2.5
 ```
 
 ## 代码风格

@@ -86,6 +86,12 @@ typedef struct {
     char     exepath[CPROC_EXEPATH_MAX];
     char     argv0[CPROC_ARGV0_MAX];   /* KERN_PROCARGS2 里的原始 argv[0] */
     char     tty_name[CPROC_TTY_MAX];  /* /dev/ttysNNN，无终端时为 "??" */
+
+    /* PROC_PIDTASKINFO 是否读取成功。
+     * 失败时 rss/vss/threads/cpu/faults 全是 0，和「真的是 0」无法区分 ——
+     * 界面 / CLI 据此显示 "—" 而不是假的 0。非 root 读其他用户的进程
+     * （含 launchd、kernel_task）时会失败。 */
+    uint8_t  taskinfo_ok;
 } cproc_snapshot_t;
 
 typedef struct {

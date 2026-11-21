@@ -12,6 +12,8 @@ let package = Package(
         // MCP（Model Context Protocol）stdio 服务：给 Claude Desktop / Cursor 等
         // 客户端提供「读进程 / 读网络 / 发信号」的工具，不依赖 GUI 是否在跑。
         .executable(name: "vantage-mcp", targets: ["VantageMCP"]),
+        // 命令行前端：list / info / detail / tree / stats / net / signal
+        .executable(name: "vantage-cli", targets: ["VantageCLI"]),
     ],
     targets: [
         // C 采集层：sysctl / libproc / Mach / IOKit / CoreFoundation
@@ -29,11 +31,23 @@ let package = Package(
                 .linkedLibrary("bsm"),
             ]
         ),
+        // 命令行共享层：采集封装 + 双语标记解码 + 表格排版（不链接 AppKit）
+        .target(
+            name: "VantageKit",
+            dependencies: ["CProc"],
+            path: "Sources/VantageKit"
+        ),
         // MCP stdio 服务（纯命令行，不链接 AppKit）
         .executableTarget(
             name: "VantageMCP",
-            dependencies: ["CProc"],
+            dependencies: ["VantageKit"],
             path: "Sources/VantageMCP"
+        ),
+        // 命令行前端
+        .executableTarget(
+            name: "VantageCLI",
+            dependencies: ["VantageKit"],
+            path: "Sources/VantageCLI"
         ),
         // AppKit 原生 GUI（含 main.swift，必须声明为 executableTarget）
         .executableTarget(

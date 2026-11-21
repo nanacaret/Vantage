@@ -17,16 +17,32 @@
 | `Packaging/Info.plist` → `NSHumanReadableCopyright` | `Copyright © 2026 nanacaret. Licensed under MIT.` |
 | README 版权行 | `© 2026 nanacaret` |
 | `Packaging/Info.plist` → `CFBundleIdentifier` | `io.github.nanacaret.Vantage`（按 GitHub 组织的反向域名惯例） |
-| `Packaging/Info.plist` → `CFBundleShortVersionString` / `CFBundleVersion` | `1.2.4` / `1.2.4` |
+| `Packaging/Info.plist` → `CFBundleShortVersionString` / `CFBundleVersion` | `nightly` / `nightly`（占位，构建时注入） |
 
 全仓库已无仓库地址占位符。若组织改用自有域名，可把 Bundle ID 换成对应反向域名；
 **改 ID 会让已保存的偏好、配色、列宽与窗口位置重置一次**，在已有分发产物时应先权衡。
 `Packaging/Info.plist` 的 `NSAccessibilityUsageDescription` 为中英双语文案，
 可按需本地化到 `InfoPlist.strings`。
 
-版本号目前为 `1.2.4`（`CFBundleShortVersionString` 与 `CFBundleVersion` 一致）。
-发新版时只改 `Packaging/Info.plist`，再 push 一个 `v*` tag 触发正式 Release；
-DMG 文件名里的版本号取自 tag，不需要另外配置。
+**仓库里不写死发布版本号**：版本是 `build_app.sh` 的一个参数，CI 由 tag 提供。
+
+```bash
+./Scripts/build_app.sh            # 本地 / PR：nightly
+./Scripts/build_app.sh 1.2.5      # 发布：tag 名去掉 v
+```
+
+同一个值由 `Scripts/inject_version.py` 写进所有需要它的地方，三处不会漂：
+
+| 消费方 | 怎么拿到版本 |
+|---|---|
+| 产物里的 `Contents/Info.plist` | `inject_version.py --plist`（PlistBuddy 改拷贝出来的那份；源 plist 是模板，`nightly` 只是占位），About 面板与 Touch ID helper 读这里 |
+| `vantage --version` | `inject_version.py --swift` 改 `Sources/VantageCLI/BuildVersion.swift`，编译期常量，运行时不读文件 |
+| DMG 文件名 / Release 标题 | CI 的 `Resolve version` 步用同一个变量（tag `v1.2.5` → `1.2.5`，其它触发 → `nightly`） |
+
+发版流程：`git tag v1.2.5 && git push origin v1.2.5`。CI 在构建前解析 tag、把 `1.2.5`
+传给 `build_app.sh`，产物版本与 DMG 文件名天然一致；本地想复现同一个版本就
+`./Scripts/build_app.sh 1.2.5`。仓库改动（bump）不再需要改任何文件 —— 版本历史就是
+`git tag -l 'v*'`，别把源 plist 里的 `nightly` 当版本号。
 
 ## 2. 截图（已就位）
 
