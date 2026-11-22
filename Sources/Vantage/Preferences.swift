@@ -336,6 +336,22 @@ final class Preferences {
         get { int("globalSearchMaxRows", 50000, 1000, 500000) }
         set { setInt(newValue, "globalSearchMaxRows", 1000, 500000) }
     }
+    /// 打开全局搜索窗口时是否自动拍一份新快照并对所有进程取样。
+    /// 默认开（原来的行为）；关掉后打开窗口沿用上次结果，按「重新取样」才采。
+    var globalSearchAutoCapture: Bool {
+        get { bool("globalSearchAutoCapture", true) }
+        set { setBool(newValue, "globalSearchAutoCapture") }
+    }
+    /// 导出快照的默认格式（`.json.gz` / `.json`）。只影响保存面板预填的扩展名，
+    /// 用户当场改成另一种仍按扩展名写。
+    var snapshotSaveFormat: GlobalSearchSnapshotFormat {
+        get {
+            let d = UserDefaults.standard
+            let v = d.object(forKey: k("snapshotSaveFormat")) as? Int
+            return GlobalSearchSnapshotFormat(rawValue: v ?? 0) ?? .gzip
+        }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: k("snapshotSaveFormat")) }
+    }
 
     // ---------------------------------------------------------------
     // 设备树 / 扩展列表
@@ -388,6 +404,7 @@ final class Preferences {
         "useLocalizedAppName", "rawNameStyle",
         "showDetailHints", "language",
         "searchUseRegex", "globalSearchHeavyPages", "globalSearchMaxRows",
+        "globalSearchAutoCapture", "snapshotSaveFormat",
         "ioregMaxNodes", "scanAppExtensions", "touchIDAuth",
         "tabsStyle", "detailTabsPerRow",
     ]

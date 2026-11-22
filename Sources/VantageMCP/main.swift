@@ -98,8 +98,12 @@ enum Tools {
                 "additionalProperties": false,
              ]),
         Spec(name: "process_detail",
+             // kind 列表直接由 DetailKind.allCases 生成：schema 的 enum 和这段说明
+             // 共用同一个来源，加页签时不会出现「schema 有 audit、说明里没有」。
              description: "Dump one detail page of a process (same collectors as the app's inspector). "
-                        + "kind: files | env | images | sockets | monitoring | regions | pipes | tty | mach | threads.",
+                        + "kind: "
+                        + SystemBridge.DetailKind.allCases.map { $0.rawValue }
+                            .joined(separator: " | ") + ".",
              schema: [
                 "type": "object",
                 "properties": [

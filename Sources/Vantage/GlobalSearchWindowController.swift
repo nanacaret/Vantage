@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 import AppKit
 import Foundation
+import UniformTypeIdentifiers
 
 // ---------------------------------------------------------------------
 // 全局搜索窗口（⌘⇧F）
@@ -14,6 +15,8 @@ import Foundation
 private enum GlobalSearchRow {
     case hit(GlobalSearchEntry)
     case failure(GlobalSearchFailure)
+    /// 快照对比模式下的 +/− 行
+    case diff(GlobalSearchDiff.Row)
 }
 
 final class GlobalSearchWindowController: NSWindowController,
@@ -25,6 +28,10 @@ final class GlobalSearchWindowController: NSWindowController,
     private let searchField = NSSearchField(frame: .zero)
     private let regexButton = NSButton(frame: .zero)
     private let recaptureButton = NSButton(frame: .zero)
+    private let exportButton = NSButton(frame: .zero)
+    private let importButton = NSButton(frame: .zero)
+    private let diffButton = NSButton(frame: .zero)
+    private let clearDiffButton = NSButton(frame: .zero)
     private let progressLabel = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(labelWithString: "")
     private let failuresCheck = NSButton(frame: .zero)
@@ -34,6 +41,13 @@ final class GlobalSearchWindowController: NSWindowController,
     private var refreshScheduled = false
     private var regexError: String?
     private var resultTruncated = false
+    /// 导出成功之类的瞬时提示，显示在状态行末尾
+    private var statusNote: String?
+
+    // 快照对比状态：非 nil 时表格显示 diff，而不是搜索结果
+    private var diffResult: GlobalSearchDiff.Summary?
+    private var diffBaselineName: String?
+    private var diffBaselineDate: Date?
 
     private static let resultCap = 5000
     private static let columnIDs = ["gsPid", "gsProcess", "gsSource", "gsContent"]
@@ -71,7 +85,12 @@ final class GlobalSearchWindowController: NSWindowController,
         window?.makeKeyAndOrderFront(nil)
         window?.orderFrontRegardless()
         AppActivate.front()
-        if session == nil { startNewSession() }
+        // 偏好里关掉「自动取样」时不再一打开就采：沿用上次结果，空着就等用户点
+        // 「重新取样」。这样只是回来看看旧数据的人不会白白触发几十秒的全量采集。
+        if session == nil && Preferences.shared.globalSearchAutoCapture {
+            startNewSession()
+        }
+        syncProgress()
         window?.makeFirstResponder(searchField)
     }
 
@@ -107,7 +126,21 @@ final class GlobalSearchWindowController: NSWindowController,
         recaptureButton.setContentCompressionResistancePriority(.defaultHigh,
                                                                 for: .horizontal)
 
-        let bar = NSStackView(views: [regexButton, searchField, recaptureButton])
+        // 快照三件套：导出 / 导入 / 与文件对比。用 controlSize .small 挤进顶栏，
+        // 窗口拉到最小宽度（720）时搜索框还有地方。
+        styleBarButton(exportButton, title: L("gs.export"),
+                       tooltip: L("gs.exportTooltip"),
+                       action: #selector(exportClicked(_:)))
+        styleBarButton(importButton, title: L("gs.import"),
+                       tooltip: L("gs.importTooltip"),
+                       action: #selector(importClicked(_:)))
+        styleBarButton(diffButton, title: L("gs.diff"),
+                       tooltip: L("gs.diffTooltip"),
+                       action: #selector(diffClicked(_:)))
+
+        let bar = NSStackView(views: [regexButton, searchField,
+                                      recaptureButton, exportButton,
+                                      importButton, diffButton])
         bar.orientation = .horizontal
         bar.spacing = 8
         bar.distribution = .fill
@@ -145,6 +178,16 @@ final class GlobalSearchWindowController: NSWindowController,
         failuresCheck.action = #selector(failuresToggled(_:))
         failuresCheck.font = NSFont.systemFont(ofSize: 10)
 
+        // 只在对比模式下出现：退出 diff、回到当前快照的结果列表
+        clearDiffButton.title = L("gs.clearDiff")
+        clearDiffButton.bezelStyle = .inline
+        clearDiffButton.controlSize = .small
+        clearDiffButton.font = NSFont.systemFont(ofSize: 10)
+        clearDiffButton.target = self
+        clearDiffButton.action = #selector(clearDiffClicked(_:))
+        clearDiffButton.toolTip = L("gs.clearDiffTooltip")
+        clearDiffButton.isHidden = true
+
         for v in [progressLabel, statusLabel] {
             v.font = NSFont.systemFont(ofSize: 10)
             v.textColor = .secondaryLabelColor
@@ -153,7 +196,8 @@ final class GlobalSearchWindowController: NSWindowController,
         progressLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
         statusLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        let footer = NSStackView(views: [failuresCheck, progressLabel, statusLabel])
+        let footer = NSStackView(views: [clearDiffButton, failuresCheck,
+                                         progressLabel, statusLabel])
         footer.orientation = .horizontal
         footer.spacing = 10
         footer.distribution = .fill
@@ -180,6 +224,20 @@ final class GlobalSearchWindowController: NSWindowController,
         vc.view = root
         window.contentViewController = vc
         syncModeUI()
+    }
+
+    private func styleBarButton(_ button: NSButton, title: String,
+                                tooltip: String, action: Selector) {
+        button.title = title
+        button.bezelStyle = .rounded
+        button.controlSize = .small
+        button.font = NSFont.systemFont(ofSize: 11)
+        button.target = self
+        button.action = action
+        button.toolTip = tooltip
+        button.setContentCompressionResistancePriority(.defaultHigh,
+                                                       for: .horizontal)
+        button.translatesAutoresizingMaskIntoConstraints = false
     }
 
     private func buildColumns() {
@@ -241,12 +299,22 @@ final class GlobalSearchWindowController: NSWindowController,
             self?.refreshScheduled = false
             self?.updateResults()
         }
+        installSession(s)
+        s.start()
+        syncProgress()
+    }
+
+    /// 换上一个新会话（现场采集或从文件导入），并把 diff 之类的临时视图清掉。
+    private func installSession(_ s: GlobalSearchSession) {
         session = s
+        diffResult = nil
+        diffBaselineName = nil
+        diffBaselineDate = nil
+        statusNote = nil
         visibleRows = []
         regexError = nil
         resultTruncated = false
         table.reloadData()
-        s.start()
         syncProgress()
     }
 
@@ -276,6 +344,22 @@ final class GlobalSearchWindowController: NSWindowController,
         var rows: [GlobalSearchRow] = []
         rows.reserveCapacity(min(Self.resultCap, 512))
         resultTruncated = false
+
+        // 对比模式：行来自 diff 结果，搜索照样生效（匹配显示文本、进程名、pid）
+        if let diff = diffResult {
+            for r in diff.rows {
+                if m.matches(diffText(r)) || m.matches(r.processName)
+                    || m.matches(String(r.pid)) {
+                    rows.append(.diff(r))
+                    if rows.count >= Self.resultCap { resultTruncated = true; break }
+                }
+            }
+            visibleRows = rows
+            table.reloadData()
+            syncProgress()
+            return
+        }
+
         for e in s.entries {
             if m.matches(e.displayLine) || m.matches(e.processName)
                 || m.matches(String(e.pid)) {
@@ -296,12 +380,41 @@ final class GlobalSearchWindowController: NSWindowController,
     private func syncProgress() {
         guard let s = session else {
             progressLabel.stringValue = L("gs.statusIdle")
-            statusLabel.stringValue = ""
+            // 没会话且自动取样关着：告诉用户为什么没数据、该按哪
+            statusLabel.stringValue = Preferences.shared.globalSearchAutoCapture
+                ? "" : L("gs.autoCaptureOff")
+            clearDiffButton.isHidden = true
             return
         }
         let stamp = DateFormatter.localizedString(from: s.capturedAt,
                                                   dateStyle: .none, timeStyle: .medium)
-        if s.finished {
+        clearDiffButton.isHidden = (diffResult == nil)
+        failuresCheck.isEnabled = (diffResult == nil)
+
+        if let diff = diffResult {
+            let baseStamp = diffBaselineDate.map {
+                DateFormatter.localizedString(from: $0, dateStyle: .none, timeStyle: .medium)
+            } ?? stamp
+            let baseline = diffBaselineName ?? ""
+            let current = s.importedFrom.map { L("gs.sourceFile", $0) } ?? L("gs.sourceLive")
+            progressLabel.stringValue = L("gs.diffVersus", baseline, baseStamp,
+                                          current, stamp)
+            var text = diff.isEmpty
+                ? L("gs.diffEmpty")
+                : L("gs.diffCounts", diff.added, diff.removed,
+                    diff.appeared, diff.gone)
+            if diff.truncated || resultTruncated { text += L("gs.truncated") }
+            if s.truncated { text += L("gs.diffBaselineTruncated") }
+            if let note = statusNote { text += " · " + note }
+            statusLabel.stringValue = text
+            recaptureButton.isEnabled = true
+            return
+        }
+
+        if let from = s.importedFrom {
+            progressLabel.stringValue = L("gs.statusImported", from, stamp,
+                                          s.entries.count, s.failures.count)
+        } else if s.finished {
             progressLabel.stringValue = L("gs.statusDone", s.processCount, stamp,
                                           s.entries.count, s.failures.count)
         } else {
@@ -314,6 +427,7 @@ final class GlobalSearchWindowController: NSWindowController,
         }
         if s.truncated || resultTruncated { text += L("gs.truncated") }
         if s.cancelledByUser { text += L("gs.cancelledBadge") }
+        if let note = statusNote { text += " · " + note }
         statusLabel.stringValue = text
         recaptureButton.isEnabled = true
     }
@@ -357,6 +471,14 @@ final class GlobalSearchWindowController: NSWindowController,
         for (i, col) in table.tableColumns.enumerated() where i < colKeys.count {
             col.title = L(colKeys[i])
         }
+        exportButton.title = L("gs.export")
+        exportButton.toolTip = L("gs.exportTooltip")
+        importButton.title = L("gs.import")
+        importButton.toolTip = L("gs.importTooltip")
+        diffButton.title = L("gs.diff")
+        diffButton.toolTip = L("gs.diffTooltip")
+        clearDiffButton.title = L("gs.clearDiff")
+        clearDiffButton.toolTip = L("gs.clearDiffTooltip")
         table.menu = makeContextMenu()
         session?.reparseForLanguage()
         syncModeUI()
@@ -377,6 +499,146 @@ final class GlobalSearchWindowController: NSWindowController,
     }
 
     @objc private func recaptureClicked(_ sender: Any?) { startNewSession() }
+
+    // -----------------------------------------------------------------
+    // 快照：导出 / 导入 / 与文件对比
+    // -----------------------------------------------------------------
+
+    private static var appVersionText: String {
+        let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        return "Vantage " + (v ?? "?")
+    }
+
+    private func currentSnapshotFile(_ s: GlobalSearchSession) -> GlobalSearchSnapshotFile {
+        s.snapshotFile(appVersion: Self.appVersionText,
+                       host: ProcessInfo.processInfo.hostName,
+                       os: ProcessInfo.processInfo.operatingSystemVersionString)
+    }
+
+    @objc private func exportClicked(_ sender: Any?) {
+        guard let s = session, let window = self.window else { return }
+        let panel = NSSavePanel()
+        panel.title = L("gs.exportPanelTitle")
+        panel.prompt = L("gs.exportPrompt")
+        let format = Preferences.shared.snapshotSaveFormat
+        panel.nameFieldStringValue = GlobalSearchSnapshotIO
+            .defaultFileName(capturedAt: s.capturedAt, format: format)
+        // 偏好里的格式排第一：用户不手动改扩展名时，保存面板补的就是它
+        panel.allowedContentTypes = format == .json ? [.json, .gzip] : [.gzip, .json]
+        panel.canCreateDirectories = true
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let url = panel.url, let self = self else { return }
+            guard let s = self.session else { return }
+            do {
+                try GlobalSearchSnapshotIO.write(self.currentSnapshotFile(s), to: url)
+                self.statusNote = L("gs.exported", url.lastPathComponent)
+                self.syncProgress()
+            } catch {
+                self.presentSnapshotError(error, titleKey: "gs.exportFailed")
+            }
+        }
+    }
+
+    @objc private func importClicked(_ sender: Any?) {
+        pickSnapshot(titleKey: "gs.importPanelTitle", promptKey: "gs.importPrompt",
+                     failureKey: "gs.importFailed") { [weak self] file, name in
+            guard let self = self else { return }
+            // 导入 = 用文件里的行替换当前会话；重新拍摄可以回到现场数据
+            self.session?.cancel()
+            let s = GlobalSearchSession(imported: file, name: name)
+            self.installSession(s)
+            self.updateResults()
+            self.statusNote = L("gs.imported", name)
+            self.syncProgress()
+        }
+    }
+
+    @objc private func diffClicked(_ sender: Any?) {
+        pickSnapshot(titleKey: "gs.comparePanelTitle", promptKey: "gs.comparePrompt",
+                     failureKey: "gs.compareFailed") { [weak self] file, name in
+            guard let self = self, let s = self.session else { return }
+            // 方向：选中的文件是「基线（旧）」，屏幕上这份是「当前（新）」
+            let summary = GlobalSearchDiff.compute(
+                baseline: file, current: self.currentSnapshotFile(s),
+                maxRows: Self.resultCap)
+            self.diffResult = summary
+            self.diffBaselineName = name
+            self.diffBaselineDate = file.capturedAt
+            self.statusNote = nil
+            self.updateResults()
+        }
+    }
+
+    @objc private func clearDiffClicked(_ sender: Any?) {
+        diffResult = nil
+        diffBaselineName = nil
+        diffBaselineDate = nil
+        statusNote = nil
+        updateResults()
+    }
+
+    /// 打开面板选一个快照文件，解析成功才交给 apply（失败弹 alert，不动当前视图）。
+    private func pickSnapshot(titleKey: String, promptKey: String,
+                              failureKey: String,
+                              then apply: @escaping (GlobalSearchSnapshotFile, String) -> Void) {
+        guard let window = self.window else { return }
+        let panel = NSOpenPanel()
+        panel.title = L(titleKey)
+        panel.prompt = L(promptKey)
+        panel.allowedContentTypes = [.gzip, .json]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let url = panel.url, let self = self else { return }
+            do {
+                apply(try GlobalSearchSnapshotIO.load(from: url), url.lastPathComponent)
+            } catch {
+                self.presentSnapshotError(error, titleKey: failureKey)
+            }
+        }
+    }
+
+    private func presentSnapshotError(_ error: Error, titleKey: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = L(titleKey)
+        alert.informativeText = snapshotErrorText(error)
+        if let w = window {
+            alert.beginSheetModal(for: w)
+        } else {
+            alert.runModal()
+        }
+    }
+
+    private func snapshotErrorText(_ error: Error) -> String {
+        guard let e = error as? GlobalSearchSnapshotIO.LoadError else {
+            return error.localizedDescription
+        }
+        switch e {
+        case .notSnapshot:
+            return L("gs.snapshotNotSnapshot")
+        case .tooNew(let v):
+            return L("gs.snapshotTooNew", v, GlobalSearchSnapshotFile.currentVersion)
+        case .unreadable(let why):
+            return L("gs.snapshotUnreadable", why)
+        }
+    }
+
+    /// diff 行的显示文本：进程出现/消失用本地化文案，其余带 +/− 前缀。
+    private func diffText(_ r: GlobalSearchDiff.Row) -> String {
+        switch r.kind {
+        case .appeared:
+            return L("gs.diffProcessAppeared")
+        case .gone:
+            return L("gs.diffProcessGone")
+        case .added:
+            return "+ " + L10n.resolveCText(r.text)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        case .removed:
+            return "− " + L10n.resolveCText(r.text)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
 
     @objc private func rowDoubleClicked(_ sender: Any?) {
         // ActionTableView 的修饰键单击会 mark 它自己的 gate；⌘+快速点两下
@@ -443,6 +705,10 @@ final class GlobalSearchWindowController: NSWindowController,
             return "\(f.pid)\t\(f.processName)\t"
                 + GlobalSearchSession.sourceTitle(f.sourceKey)
                 + "\t" + L("gs.fail.\(f.reasonKey)")
+        case .diff(let d):
+            return "\(d.pid)\t\(d.processName)\t"
+                + GlobalSearchSession.sourceTitle(d.sourceKey)
+                + "\t" + diffText(d)
         }
     }
 
@@ -482,30 +748,47 @@ final class GlobalSearchWindowController: NSWindowController,
             cell.textColor = .secondaryLabelColor
         default:
             cell.stringValue = content(of: r)
-            cell.textColor = (isFailure(r) ? .tertiaryLabelColor : .labelColor)
+            switch r {
+            case .failure:
+                cell.textColor = .tertiaryLabelColor
+            case .diff(let d):
+                switch d.kind {
+                case .added, .appeared: cell.textColor = .systemGreen
+                case .removed, .gone:   cell.textColor = .systemRed
+                }
+            case .hit:
+                cell.textColor = .labelColor
+            }
         }
         return cell
     }
 
     private func pid(of r: GlobalSearchRow) -> Int32 {
-        switch r { case .hit(let e): return e.pid; case .failure(let f): return f.pid }
+        switch r {
+        case .hit(let e):     return e.pid
+        case .failure(let f): return f.pid
+        case .diff(let d):    return d.pid
+        }
     }
     private func processName(of r: GlobalSearchRow) -> String {
-        switch r { case .hit(let e): return e.processName; case .failure(let f): return f.processName }
+        switch r {
+        case .hit(let e):     return e.processName
+        case .failure(let f): return f.processName
+        case .diff(let d):    return d.processName
+        }
     }
     private func sourceTitle(of r: GlobalSearchRow) -> String {
         switch r {
         case .hit(let e):     return GlobalSearchSession.sourceTitle(e.sourceKey)
         case .failure(let f): return GlobalSearchSession.sourceTitle(f.sourceKey)
+        case .diff(let d):    return GlobalSearchSession.sourceTitle(d.sourceKey)
         }
-    }
-    private func isFailure(_ r: GlobalSearchRow) -> Bool {
-        if case .failure = r { return true }; return false
     }
     private func content(of r: GlobalSearchRow) -> String {
         switch r {
         case .hit(let e):     return e.displayLine
         case .failure(let f): return L("gs.fail.\(f.reasonKey)")
+        case .diff(let d):    return diffText(d)
         }
     }
 

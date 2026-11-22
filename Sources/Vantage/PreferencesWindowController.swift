@@ -49,9 +49,11 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
         case scanAppExtensions = 316
         case showArgv0WhenDifferent = 317
         case touchIDAuth = 318
+        case globalSearchAutoCapture = 319
         // 弹出菜单段 200–204 已占满，名称格式 / 语言另起一段
         case rawNameStyle = 205
         case language = 206
+        case snapshotSaveFormat = 209
         case tabsLayout = 207, classicPerRow
     }
 
@@ -488,6 +490,11 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
               hint: L("pref.globalSearchHeavyPagesHint"))
         number(.globalSearchMaxRows, L("pref.globalSearchMaxRows"),
                unit: L("pref.rows"), hint: L("pref.globalSearchMaxRowsHint"))
+        check(.globalSearchAutoCapture, L("pref.globalSearchAutoCapture"),
+              hint: L("pref.globalSearchAutoCaptureHint"))
+        popup(.snapshotSaveFormat, L("pref.snapshotSaveFormat"),
+              [L("pref.snapshotFormatGzip"), L("pref.snapshotFormatJson")],
+              hint: L("pref.snapshotSaveFormatHint"))
     }
 
     /// 提权与安全
@@ -1038,6 +1045,7 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
             (.showDetailHints, p.showDetailHints),
             (.searchUseRegex, p.searchUseRegex),
             (.globalSearchHeavyPages, p.globalSearchHeavyPages),
+            (.globalSearchAutoCapture, p.globalSearchAutoCapture),
             (.scanAppExtensions, p.scanAppExtensions),
             (.touchIDAuth, p.touchIDAuth),
         ]
@@ -1057,6 +1065,7 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
             sortKeys.firstIndex(of: p.defaultSortKey) ?? 0)
         popups[Tag.rawNameStyle.rawValue]?.selectItem(at: p.rawNameStyle.rawValue)
         popups[Tag.language.rawValue]?.selectItem(at: p.language.rawValue)
+        popups[Tag.snapshotSaveFormat.rawValue]?.selectItem(at: p.snapshotSaveFormat.rawValue)
         // 布局：0 = 左侧竖排，1 = 经典（横向）
         popups[Tag.tabsLayout.rawValue]?.selectItem(
             at: p.tabsStyle == .left ? 0 : 1)
@@ -1209,6 +1218,7 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
             // 主表 / 详情表 / 全局搜索窗口都会收到，各自按新语义重新过滤
             NotificationCenter.default.post(name: .searchModeDidChange, object: self)
         case .globalSearchHeavyPages:   p.globalSearchHeavyPages = on
+        case .globalSearchAutoCapture:  p.globalSearchAutoCapture = on
         case .scanAppExtensions:       p.scanAppExtensions = on
         default: return
         }
@@ -1372,6 +1382,8 @@ final class PreferencesWindowController: NSWindowController, NSTextFieldDelegate
         case .defaultSortKey:
             let keys: [SortKey] = [.cpu, .name, .pid, .mem, .threads, .ports, .start]
             p.defaultSortKey = keys[max(0, min(i, keys.count - 1))]
+        case .snapshotSaveFormat:
+            p.snapshotSaveFormat = GlobalSearchSnapshotFormat(rawValue: i) ?? .gzip
         case .rawNameStyle:
             p.rawNameStyle = RawNameStyle(rawValue: i) ?? .parentheses
             syncNamePreview()

@@ -216,7 +216,40 @@ SMC 的 `#KEY` 总数与温度键读数（参与 CPU/GPU 平均的会打 `[CPU]`
 - 每页最多 2000 行、整场取样最多 `globalSearchMaxRows` 行（默认 50000），超出即截断并标注，避免 regions 一页上万行淹没结果。
 - 采集与详情页**共用串行队列**（C 层 `g_pipe_index` 是全局静态变量、无锁，不能并发），但按**每批 4 个进程**分片提交：详情页的惰性采集最多排在一批之后，不会被几百个进程饿死。
 - 进度显示「正在取样 x/N · 快照时间」；「重新取样」按钮随时拍新快照。窗口关闭不销毁会话，再打开沿用上一次结果。
+- 打开窗口是否自动拍快照由偏好「进入全局搜索时自动取样」控制（默认开；关掉后只在按「重新取样」时采集，空会话会显示提示）。
 - 双击（或 ⌘/⌥ + 单击）命中行 → 打开 / 激活该 PID 的检查器、切到对应页签并定位到那一行；右键可「在主表中定位」「复制行」；⌘C 复制选中行。
+
+### 快照的导出 / 导入 / 对比
+
+一次取样可能花几十秒，结果也不该只活在内存里：窗口顶栏有三个动作。格式是 UTF-8 JSON
+（`GlobalSearchSnapshotFile`，`format = "vantage.globalsearch.snapshot"`，带 schema 版本），
+**默认再套一层 gzip**：5 万行的快照裸 JSON 约 5 MB，gzip 后 1.1 MB（缩进版是 15 MB，
+所以 JSON 不再 pretty-print）。
+
+| 动作 | 行为 |
+|---|---|
+| 导出… | 把当前会话（含 `failures`、是否截断 / 取消、重量级页是否开启）写成文件；默认名 `vantage-snapshot-<拍摄时间>.json.gz`，另存为 `.json` 则是裸 JSON（方便 jq）。预填的扩展名跟着偏好「快照默认保存格式」（`Preferences.snapshotSaveFormat`），偏好是 `.json` 时保存面板把 `.json` 排第一 |
+| 导入… | 用文件里的行替换当前会话，不再重采样；之后搜索 / 复制 / 导出 / 对比都能用 |
+| 对比… | 选中的文件是**基线（旧）**，屏幕上这份是**当前（新）**，逐行算出 +/− 并直接显示在表格里（绿 / 红），「返回结果」回到原视图 |
+
+gzip 是自己拼的：`Compression` 框架的 `COMPRESSION_ZLIB` 输出是裸 deflate，外面补 10 字节
+头 + CRC32/ISIZE 尾就是标准 `.gz`（`gzip -t` / `gunzip` 直接可用，实测过），因此不用链
+libz。读的时候按文件头 `1f 8b` 自动识别，CRC 对不上就拒绝导入（截断 / 传坏的文件不会变成
+脏数据）。
+
+采样阶段就把**表头行和 `__hint__` 提示行丢掉**：表头（`FD / 类型 / 打开标志 / 路径`、
+`Item / Value / Description` 等 12 种）是列名，提示行是解释文字，留着每个进程都会贡献几条
+可搜噪音，和 GUI「默认隐藏提示行」的口径一致。过滤后为空的页（tty、env 这种常态空页）直接
+跳过，**不算采集失败**，否则「显示失败」里会被空页刷屏。
+
+存储的是 C 层原文 `rawLine`（含双语标记），所以同一份文件在中文 / 英文界面下都能正确显示，
+切换语言时重新解析即可。差分按「pid + 来源」分组比较行集合：同一 pid 同一来源下新增的行算
+`+`、消失的算 `−`；只在一边出现的 pid 只记一条「进程出现 / 消失」，不把它的所有行刷成
++/−（一次重启否则就是几千行噪音）。两边都截断或当前行数超上限时，状态行会标出来 ——
+截断的快照做 diff 结论要打折。
+
+实现放在 `GlobalSearchSnapshotFile.swift`，**只依赖 Foundation**（不引用 `L()` / AppKit），
+所以可以脱离 App 单独编译测试：`swiftc GlobalSearchSnapshotFile.swift test-main.swift`。
 
 偏好设置 `⌘, → 通用 → 搜索 / 全局搜索` 里的三个选项：正则模式开关、是否包含重量级页、行数上限（1000–500000）。全部即时生效，切换语言后结果行按新语言重新解析再过滤。
 
@@ -324,7 +357,8 @@ Vantage/
 │       ├── DetailLoadCache.swift       # 详情按页缓存 + 共享串行队列
 │       ├── SearchMatcher.swift                  # 字面量 / 正则统一匹配器（含无效正则回退）
 │       ├── GlobalSearchSnapshot.swift          # 固定快照 + 分批对所有 PID 取样
-│       ├── GlobalSearchWindowController.swift  # ⌘⇧F 独立全局搜索窗口
+│       ├── GlobalSearchWindowController.swift  # ⌘⇧F 独立全局搜索窗口（导出 / 导入 / 对比）
+│       ├── GlobalSearchSnapshotFile.swift      # 快照 JSON 格式 + 差分（仅 Foundation）
 │       ├── IORegistryBrowser.swift             # IORegistry 树 / 属性的 C 桥接与建模
 │       ├── DeviceBrowserWindowController.swift # ⌘⌥B 设备树（树 + 属性表）
 │       ├── ExtensionScanner.swift              # .kext/.dext/.systemextension/.appex 扫描
@@ -1183,7 +1217,7 @@ Sources/Vantage/
 | 通用 | 刷新与默认视图、排序与行为 |
 | 界面 | 语言、详情提示行、**页签排布（左侧竖排 / 经典；经典下再选每行 N 个）**、进程名称显示 + 实时预览 |
 | 数据与缓存 | 采集上限、详情与缓存 TTL、设备树 / 扩展 |
-| 搜索 | 正则模式、全局搜索重量级页、行数上限 |
+| 搜索 | 正则模式、全局搜索重量级页、行数上限、进入全局搜索是否自动取样、快照默认保存格式 |
 | 提权 | Touch ID 助手安装 / 卸载 / 状态 |
 | 颜色 | 已退出进程高亮 + 全部可定制配色 |
 | 信号 | 勾选哪些信号出现在「发送信号」菜单里 + 发送前确认策略 |

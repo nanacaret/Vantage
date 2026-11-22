@@ -46,6 +46,10 @@ private struct GlobalSearchSource {
     let key: String
     let tabIndex: Int?
     let heavy: Bool
+    /// 该页第一行表头的中文首列（与 DetailTabViewController.parse 的 titles 同源）。
+    /// 采样时据此丢掉表头 —— 否则「FD / Type / Open Flags / Path」会变成一条可搜结果，
+    /// 每个进程都来一遍，纯噪音。nil = 这个来源没有表头（主表字段 / 代码签名）。
+    var header: String? = nil
     let load: (Int32, ProcessSnapshot) -> DetailLoadCache.Payload?
 }
 
@@ -57,23 +61,23 @@ private enum GlobalSearchSources {
                 .lines(Self.processLines(p))
             },
         ]
-        func c(_ key: String, _ tab: Int,
+        func c(_ key: String, _ tab: Int, _ header: String,
                _ kind: ProcBridge.DetailKind) -> GlobalSearchSource {
-            GlobalSearchSource(key: key, tabIndex: tab, heavy: false) { pid, _ in
+            GlobalSearchSource(key: key, tabIndex: tab, heavy: false, header: header) { pid, _ in
                 .lines(ProcBridge.detail(kind, pid: pid))
             }
         }
         // 页签下标统一取自 DetailTab，避免插页签后这里静默错位
-        out.append(c("files",       DetailTab.files.rawValue, .openFiles))
-        out.append(c("env",         DetailTab.env.rawValue, .environment))
-        out.append(c("sockets",     DetailTab.sockets.rawValue, .sockets))
-        out.append(c("monitoring",  DetailTab.monitoring.rawValue, .monitoring))
-        out.append(c("tty",         DetailTab.tty.rawValue, .tty))
-        out.append(c("mach",        DetailTab.mach.rawValue, .machSecurity))
-        out.append(c("audit",       DetailTab.audit.rawValue, .audit))
+        out.append(c("files",       DetailTab.files.rawValue, "FD", .openFiles))
+        out.append(c("env",         DetailTab.env.rawValue, "变量", .environment))
+        out.append(c("sockets",     DetailTab.sockets.rawValue, "FD", .sockets))
+        out.append(c("monitoring",  DetailTab.monitoring.rawValue, "FD", .monitoring))
+        out.append(c("tty",         DetailTab.tty.rawValue, "项目", .tty))
+        out.append(c("mach",        DetailTab.mach.rawValue, "项目", .machSecurity))
+        out.append(c("audit",       DetailTab.audit.rawValue, "项目", .audit))
         out.append(GlobalSearchSource(key: "windows",
                                       tabIndex: DetailTab.windows.rawValue,
-                                      heavy: false) { pid, _ in
+                                      heavy: false, header: "窗口号") { pid, _ in
             .lines(WindowLocator.detailLines(for: pid))
         })
         out.append(GlobalSearchSource(key: "signing",
@@ -83,18 +87,18 @@ private enum GlobalSearchSources {
         })
 
         if includeHeavy {
-            func h(_ key: String, _ tab: Int,
+            func h(_ key: String, _ tab: Int, _ header: String,
                    _ kind: ProcBridge.DetailKind) -> GlobalSearchSource {
-                GlobalSearchSource(key: key, tabIndex: tab, heavy: true) { pid, _ in
+                GlobalSearchSource(key: key, tabIndex: tab, heavy: true, header: header) { pid, _ in
                     .lines(ProcBridge.detail(kind, pid: pid))
                 }
             }
-            out.append(h("dylibs",     DetailTab.dylibs.rawValue, .dylibs))
+            out.append(h("dylibs",     DetailTab.dylibs.rawValue, "加载地址", .dylibs))
             // 线程清单要为每个进程逐线程调 proc_pidinfo，跟 vm_map 枚举一样
             // 归到「重活」：只在偏好里打开重活页时才参与全局搜索。
-            out.append(h("threads",    DetailTab.threads.rawValue, .threads))
-            out.append(h("pipePeers",  DetailTab.pipePeers.rawValue, .pipePeers))
-            out.append(h("regions",    DetailTab.regions.rawValue, .regions))
+            out.append(h("threads",    DetailTab.threads.rawValue, "TID", .threads))
+            out.append(h("pipePeers",  DetailTab.pipePeers.rawValue, "FD", .pipePeers))
+            out.append(h("regions",    DetailTab.regions.rawValue, "起始地址", .regions))
         }
         return out
     }
@@ -124,6 +128,10 @@ final class GlobalSearchSession {
 
     let capturedAt: Date
     let processCount: Int
+    /// 本次是否采了重活页（regions / threads / pipes / dylibs）；写进快照文件
+    let includeHeavyPages: Bool
+    /// 从文件导入时为文件名，本次现场采集时为 nil
+    let importedFrom: String?
     private let processes: [ProcessSnapshot]
 
     /// 只在主线程读写：后台每完成一批就切一块增量交给主队列追加。
@@ -162,6 +170,54 @@ final class GlobalSearchSession {
         self.capturedAt = Date()
         self.processes = snapshot
         self.processCount = processCount
+        self.includeHeavyPages = Preferences.shared.globalSearchHeavyPages
+        self.importedFrom = nil
+    }
+
+    /// 从快照文件恢复：不再重采样，直接把行灌进来（界面表现为「已完成」）。
+    /// rawLine 原样保留，所以切换界面语言后仍能按新语言重新解析。
+    init(imported file: GlobalSearchSnapshotFile, name: String) {
+        self.capturedAt = file.capturedAt
+        self.processes = []
+        self.processCount = file.processCount
+        self.includeHeavyPages = file.includeHeavyPages
+        self.importedFrom = name
+        self.entries = file.entries.map { e in
+            let text = L10n.resolveCText(e.rawLine)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let fields = text.components(separatedBy: "\t")
+            return GlobalSearchEntry(pid: e.pid, processName: e.processName,
+                                     sourceKey: e.sourceKey, tabIndex: e.tabIndex,
+                                     rawLine: e.rawLine, fields: fields,
+                                     displayLine: fields.joined(separator: "  "))
+        }
+        self.failures = file.failures.map { f in
+            GlobalSearchFailure(pid: f.pid, processName: f.processName,
+                                sourceKey: f.sourceKey, reasonKey: f.reasonKey)
+        }
+        self.processed = file.processCount
+        self.finished = true
+        self.truncated = file.truncated
+        self.cancelledByUser = file.cancelledByUser
+    }
+
+    /// 导出用：把当前内存里的行原样拍成文件模型（不再重采样）。
+    func snapshotFile(appVersion: String, host: String, os: String)
+        -> GlobalSearchSnapshotFile {
+        GlobalSearchSnapshotFile(
+            appVersion: appVersion, host: host, os: os,
+            capturedAt: capturedAt, processCount: processCount,
+            includeHeavyPages: includeHeavyPages,
+            truncated: truncated, cancelledByUser: cancelledByUser,
+            entries: entries.map {
+                .init(pid: $0.pid, processName: $0.processName,
+                      sourceKey: $0.sourceKey, tabIndex: $0.tabIndex,
+                      rawLine: $0.rawLine)
+            },
+            failures: failures.map {
+                .init(pid: $0.pid, processName: $0.processName,
+                      sourceKey: $0.sourceKey, reasonKey: $0.reasonKey)
+            })
     }
 
     func cancel() {
@@ -231,18 +287,25 @@ final class GlobalSearchSession {
                                 reasonKey: "collectionFailed"))
                             continue
                         }
-                        let lines: [String]
+                        var lines: [String]
                         switch pl {
                         case .lines(let v):   lines = v
                         case .pairs(let v):   lines = v.map { "\($0.0)\t\($0.1)" }
                         case .port(let port): lines = ["\(port)"]
                         }
-                        guard !lines.isEmpty else {
-                            newFailures.append(GlobalSearchFailure(
-                                pid: p.pid, processName: p.displayLabel,
-                                sourceKey: src.key, reasonKey: "noData"))
-                            continue
+                        // 表头（列名）和 __hint__ 提示行不是数据：放进结果里每个进程
+                        // 都会贡献一条可搜的噪音行，跟 GUI 里「默认隐藏提示」保持一致。
+                        if let header = src.header, let first = lines.first,
+                           L10n.cFieldZh(first.components(separatedBy: "\t").first ?? "")
+                            == header {
+                            lines.removeFirst()
                         }
+                        if lines.contains(where: { $0.hasPrefix(L10n.hintTag) }) {
+                            lines.removeAll { $0.hasPrefix(L10n.hintTag) }
+                        }
+                        // 过滤完空空如也（页签本来就没内容）不算失败 —— 记成 failure
+                        // 会让「显示失败」里堆满 tty / env 这种常态空页。
+                        guard !lines.isEmpty else { continue }
 
                         if lines.count > Self.perSourceCap { st.truncated = true }
                         for raw in lines.prefix(Self.perSourceCap) {

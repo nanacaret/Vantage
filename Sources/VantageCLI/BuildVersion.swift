@@ -12,5 +12,5 @@
 ///   * 二进制被软链、被拷走、甚至 bundle 被删掉，`--version` 照样准确 ——
 ///     它就在 `__TEXT` 段里。
 enum BuildVersion {
-    static let marketing = "1.3.0"
+    static let marketing = "nightly"
 }
